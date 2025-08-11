@@ -4,9 +4,7 @@ import warnings
 
 from datetime import datetime
 
-# from my_ai_agent.crew import MyAiAgent
-# from ...crew import MyAiAgent
-from crew import MyAiAgent
+from geist_agent.crew import GeistAgent
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
 
@@ -25,7 +23,7 @@ def run():
     }
     
     try:
-        MyAiAgent().crew().kickoff(inputs=inputs)
+        GeistAgent().crew().kickoff(inputs=inputs)
     except Exception as e:
         raise Exception(f"An error occurred while running the crew: {e}")
 
@@ -39,7 +37,7 @@ def train():
         'current_year': str(datetime.now().year)
     }
     try:
-        MyAiAgent().crew().train(n_iterations=int(sys.argv[1]), filename=sys.argv[2], inputs=inputs)
+        GeistAgent().crew().train(n_iterations=int(sys.argv[1]), filename=sys.argv[2], inputs=inputs)
 
     except Exception as e:
         raise Exception(f"An error occurred while training the crew: {e}")
@@ -49,7 +47,7 @@ def replay():
     Replay the crew execution from a specific task.
     """
     try:
-        MyAiAgent().crew().replay(task_id=sys.argv[1])
+        GeistAgent().crew().replay(task_id=sys.argv[1])
 
     except Exception as e:
         raise Exception(f"An error occurred while replaying the crew: {e}")
@@ -64,7 +62,7 @@ def test():
     }
     
     try:
-        MyAiAgent().crew().test(n_iterations=int(sys.argv[1]), eval_llm=sys.argv[2], inputs=inputs)
+        GeistAgent().crew().test(n_iterations=int(sys.argv[1]), eval_llm=sys.argv[2], inputs=inputs)
 
     except Exception as e:
         raise Exception(f"An error occurred while testing the crew: {e}")
