@@ -5,6 +5,7 @@ import warnings
 from datetime import datetime
 
 from geist_agent.crew import GeistAgent
+from geist_agent.customCrew import CustomAgent
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
 
@@ -66,3 +67,17 @@ def test():
 
     except Exception as e:
         raise Exception(f"An error occurred while testing the crew: {e}")
+    
+    
+def customRun():
+    """
+    Run the custom crew.
+    """
+    inputs = {
+        'topic': 'Quantum Mechanics',
+        'current_year': str(datetime.now().year)
+    }
+    try:
+        CustomAgent().customCrew().kickoff(inputs=inputs)  # Use CustomAgent
+    except Exception as e:
+        raise Exception(f"An error occurred while running the custom crew: {e}")

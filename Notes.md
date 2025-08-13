@@ -1,3 +1,8 @@
+
+
+# 8/12/2025
+Today was much busier than anticipated so I could only read CrewAI documentation pages Introduction, Agent, Tasks & CLI. I still really want to be able to have multiple custom commands for various workflows within the same agent system so I tried experimenting but was unsuccessful. I’m trying to force it to run python commands but it refuses. This is my first project in python so it is most likely user error, unless they are actively blocking commands outside of crewai CLI. Yesterday I reverted all the changes I attempted but today I’ll save them to review & then undo them if I cant get it to work. 
+
 # 8/11/2025
 I familiarized myself with the template files so I understand the code flow. The run function in main.py calls crew.py, which pulls from the agents.yaml & tasks.yaml. Simple enough, but as far as I currently understand it, the run function bottlenecks the crew into only being able to run a singular workflow. You can add more to crew.py, agents.yaml & tasks.yaml so it can accomplish much more complex tasks, but I don't yet see a way to run various different workflows to accomplish different goals.
 For example, I would like to keep the research functionality that it has, that could be helpful. But I would also like to add completely different capabilities like being able to scan a codebase & summarize it. Or be able to search that codebase for functions that accomplish a certain task. Essentially making my crew work like a free, read only, version of claude code. But those would have to be 2 separate run functions that I would call. I would also need a way to input information for running it. I would also like to build out different workflows around different tools.
