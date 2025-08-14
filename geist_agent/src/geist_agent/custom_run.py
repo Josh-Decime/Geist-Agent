@@ -1,4 +1,4 @@
-from src.geist_agent.main import customRun
+from main import customRun
 
 if __name__ == "__main__":
     customRun()
