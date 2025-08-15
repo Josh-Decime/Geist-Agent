@@ -4,8 +4,8 @@ from crewai.agents.agent_builder.base_agent import BaseAgent
 from typing import List
 
 @CrewBase
-class CustomAgent():
-    """GeistAgent crew"""
+class ScryingAgent():
+    """Scrying crew for divination and research operations"""
 
     agents: List[BaseAgent]
     tasks: List[Task]
@@ -34,12 +34,12 @@ class CustomAgent():
     def reporting_task(self) -> Task:
         return Task(
             config=self.tasks_config['reporting_task'],  # type: ignore[index]
-            output_file='custom_report.md'
+            output_file='scrying_report.md'
         )
 
-    @crew  # Decorator remains @crew
-    def customCrew(self) -> Crew:  # Renamed method
-        """Creates the CustomAgent crew"""
+    @crew
+    def scrying(self) -> Crew:
+        """Creates the ScryingAgent crew"""
         return Crew(
             agents=self.agents,
             tasks=self.tasks,
