@@ -13,13 +13,15 @@ def scry():
     Run the custom crew for scrying operations.
     """
     inputs = {
-        'topic': 'Ghost Sightings',
+        'topic': 'AI in Cybersecurity',
         'current_year': str(datetime.now().year)
     }
     try:
-        ScryingAgent().scrying().kickoff(inputs=inputs)
+        scrying_agent = ScryingAgent()
+        scrying_agent.set_topic(inputs['topic'])
+        scrying_agent.scrying().kickoff(inputs=inputs)
     except Exception as e:
-        raise Exception(f"An error occurred while running the scrying: {e}")
+        raise Exception(f"An error occurred while running the scrying crew: {e}")
 
 
 if __name__ == "__main__":
