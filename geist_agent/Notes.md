@@ -1,3 +1,11 @@
+# 8/15/2025
+Set up some organization for where reports will be stored & created a utils file so I can have functions that will be shared across workflows. Now report names are generated from the topic + date & time to make sure each file has a unique name so they no longer overwrite each other.
+
+# 8/14/2025
+I’m beginning to build out the first workflow structure for my agent. I went with themed naming conventions rather than concise/explicit names. This is not the decision I would have made for a client project, but since this is a personal project I can have some fun with it. 
+I chose poltern for the name of the file that will launch my workflows because it is the source of the prefix for poltergeist. It is a German word that roughly translates to making noise. Poltern is the difference between a geist/ghost that can interact with the physical world or not.
+Scrying is my thematic choice for the research workflow. The definition “Scrying, also referred to as "seeing" or "peeping," is a practice rooted in divination and fortune-telling. It involves gazing into a medium, hoping to receive significant messages or visions that could offer personal guidance, prophecy, revelation, or inspiration.” fits well with scouring the internet to compile information about a topic.
+
 # 8/13/2025
 I was right when I said it was likely user error blocking me from running a custom CLI script to run another workflow. Python pathing is tricky, I’ve never encountered any issues like that in any other coding language/project I’ve done before. 
 The issue was that it wasn't in the virtual environment that was created by the template when I tried to execute python custom_run.py & custom_run.py import was trying to run from the wrong place. When I started the project I got ahead of myself & set up a virtual environment before launching the create CrewAI command so there was a virtual environment inside another virtual environment, because I was following AI generated instructions. After I restarted the project & just followed CrewAI documentation, like I should have in the first place, I hadn't paid much attention to it having a virtual environment because the CrewAI run command worked without being in the virtual environment. 

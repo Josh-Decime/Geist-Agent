@@ -2,18 +2,19 @@
 import sys
 import warnings
 from datetime import datetime
+from parse import parse_args
 
 from geist_agent.scrying import ScryingAgent
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
 
 
-def scry():
+def scry(args):
     """
     Run the custom crew for scrying operations.
     """
     inputs = {
-        'topic': 'AI in Cybersecurity',
+        'topic': args.topic,
         'current_year': str(datetime.now().year)
     }
     try:
@@ -25,4 +26,11 @@ def scry():
 
 
 if __name__ == "__main__":
-    scry()
+    args = parse_args()
+
+    if args.command == "scry":
+        scry(args)
+    else:
+        print(f"Error: Unknown function '{args.command}'.")
+        print("Use --help for available functions.")
+        sys.exit(1)
