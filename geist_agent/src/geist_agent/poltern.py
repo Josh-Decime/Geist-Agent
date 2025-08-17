@@ -8,7 +8,6 @@ from geist_agent.scrying import ScryingAgent
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
 
-
 def scry(args):
     """
     Run the custom crew for scrying operations.
@@ -24,13 +23,12 @@ def scry(args):
     except Exception as e:
         raise Exception(f"An error occurred while running the scrying crew: {e}")
 
-
 if __name__ == "__main__":
     args = parse_args()
 
     if args.command == "scry":
         scry(args)
     else:
-        print(f"Error: Unknown function '{args.command}'.")
-        print("Use --help for available functions.")
+        print(f"Error: Unknown command '{args.command}'. Available commands: scry")
+        print("Run 'python poltern.py --help' for usage.")
         sys.exit(1)
