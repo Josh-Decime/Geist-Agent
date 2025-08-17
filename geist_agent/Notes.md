@@ -1,3 +1,9 @@
+# 8/16/2025
+Today I set up argparse so information can be input from the CLI instead of being manually changed in the poltern.py file. Now you can set the topic in the CLI by using –topic “ “. 
+The default topic is currently set to “The Meaning of Life” because I thought it was amusing that a poltergeist’s default would be contemplating the meaning of life, since it has a hint of irony. 
+This is an important step towards being able to have multiple workflow functions. But I can't help but wonder if there was a better solution to be more like “crewai run”. Running these custom commands can be a little annoying when you start up the terminal because you have to navigate to the right path to activate the virtual environment before you can run anything. Crewai run could just run off main & didnt require manual activation of the virtual environment. It also had more customized commands, it would be nice if all you had to type was “geist scry –topic ‘ ‘” instead of “python poltern.py scry –topic ‘ ‘“
+I’ll look into it tomorrow to see if it's worth setting up. It would be better to tackle that earlier in the project so refactoring won't be such an undertaking.
+
 # 8/15/2025
 Set up some organization for where reports will be stored & created a utils file so I can have functions that will be shared across workflows. Now report names are generated from the topic + date & time to make sure each file has a unique name so they no longer overwrite each other.
 
