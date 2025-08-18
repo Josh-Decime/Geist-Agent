@@ -1026,10 +1026,14 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "crewai", extra = ["tools"] },
+    { name = "typer" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "crewai", extras = ["tools"], specifier = ">=0.157.0,<1.0.0" }]
+requires-dist = [
+    { name = "crewai", extras = ["tools"], specifier = ">=0.157.0,<1.0.0" },
+    { name = "typer", extras = ["all"], specifier = ">=0.12.0" },
+]
 
 [[package]]
 name = "google-auth"

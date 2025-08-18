@@ -1,3 +1,6 @@
+# 8/17/2025
+After some research I decided to try Typer for my custom CLI. Today was very busy so I didn't have as much time as I needed to get this fully up & running. I decided to make the command poltergeist instead of geist, its a little longer but more fitting. I got it to the point that poltergeist –help works but when I ran poltergeist scry –topic ”Poltergeists” I got the error that its missing OpenAI API key for gpt-4o-mini. That is the default agent, which means it's no longer using Qwen 2.5 like I have setup in my .env. I’m out of time for the night, I hate committing a project when it isn’t fully functioning but its sleep time. I’ll work on fixing the .env issue tomorrow. 
+
 # 8/16/2025
 Today I set up argparse so information can be input from the CLI instead of being manually changed in the poltern.py file. Now you can set the topic in the CLI by using –topic “ “. 
 The default topic is currently set to “The Meaning of Life” because I thought it was amusing that a poltergeist’s default would be contemplating the meaning of life, since it has a hint of irony. 

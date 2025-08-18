@@ -1,34 +1,25 @@
-#!/usr/bin/env python
-import sys
-import warnings
+# src/geist_agent/poltern.py
+import typer
 from datetime import datetime
-from parse import parse_args
-
 from geist_agent.scrying import ScryingAgent
 
-warnings.filterwarnings("ignore", category=SyntaxWarning, module="pysbd")
+app = typer.Typer(help="Poltergeist CLI v0.1.2")
 
-def scry(args):
-    """
-    Run the custom crew for scrying operations.
-    """
-    inputs = {
-        'topic': args.topic,
-        'current_year': str(datetime.now().year)
-    }
-    try:
-        scrying_agent = ScryingAgent()
-        scrying_agent.set_topic(inputs['topic'])
-        scrying_agent.scrying().kickoff(inputs=inputs)
-    except Exception as e:
-        raise Exception(f"An error occurred while running the scrying crew: {e}")
+@app.command("scry", help="Direct Geist to research a topic")
+def scry(
+    topic: str = typer.Option("The Meaning of Life", "--topic", "-t", help="What to scry about")
+):
+    inputs = {"topic": topic, "current_year": str(datetime.now().year)}
+    s = ScryingAgent()
+    s.set_topic(topic)
+    s.scrying().kickoff(inputs=inputs)
+
+@app.command("version", help="Show version and confirm CLI wiring")
+def version_cmd():
+    typer.echo("poltergeist OK")
+
+def main():
+    app()
 
 if __name__ == "__main__":
-    args = parse_args()
-
-    if args.command == "scry":
-        scry(args)
-    else:
-        print(f"Error: Unknown command '{args.command}'. Available commands: scry")
-        print("Run 'python poltern.py --help' for usage.")
-        sys.exit(1)
+    main()

@@ -1,3 +1,5 @@
+# Once Typer is fully working this file can be deleted
+
 import argparse
 
 def parse_args():
