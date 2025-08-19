@@ -4,6 +4,8 @@ from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from typing import List
 from geist_agent.utils import ReportUtils
+from geist_agent.utils import PathUtils
+from pathlib import Path
 
 @CrewBase
 class ScryingAgent():
@@ -39,13 +41,9 @@ class ScryingAgent():
 
     @task
     def reporting_task(self) -> Task:
-        # Generate filename using utility
         filename = ReportUtils.generate_filename(self.topic)
-        # Use absolute path to avoid path traversal issues
-        import os
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        full_path = os.path.join(project_root, 'reports', 'scrying_reports', filename)
-        
+        reports_dir = PathUtils.ensure_reports_dir("scrying_reports")
+        full_path = str(reports_dir / filename)   # <-- pathlib join + cast to str
         return Task(
             config=self.tasks_config['reporting_task'],  # type: ignore[index]
             output_file=full_path
