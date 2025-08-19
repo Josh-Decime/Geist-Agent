@@ -1,3 +1,7 @@
+# 8/18/2025
+Typer was well worth the effort of refactoring, I’m really glad I set this up early in the project! Being able to run the command globally is really cool, so I can just run it straight from the terminal. That will open up some new possibilities for what Geist can do.
+The issue I had last night was just that because it was global it was having issues calling certain files, so they had to be reconnected. Now it's all running beautifully! The little bit of effort of updating the pyproject.toml version to get it to recognize a change so I can reinstall it is well worth having this be a global command. Plus I can always run longer commands (uv run -m geist_agent.poltern scry --topic "Your topic") to test things more quickly. I’m really loving this so far! Setting this up was definitely the right call. 
+
 # 8/17/2025
 After some research I decided to try Typer for my custom CLI. Today was very busy so I didn't have as much time as I needed to get this fully up & running. I decided to make the command poltergeist instead of geist, its a little longer but more fitting. I got it to the point that poltergeist –help works but when I ran poltergeist scry –topic ”Poltergeists” I got the error that its missing OpenAI API key for gpt-4o-mini. That is the default agent, which means it's no longer using Qwen 2.5 like I have setup in my .env. I’m out of time for the night, I hate committing a project when it isn’t fully functioning but its sleep time. I’ll work on fixing the .env issue tomorrow. 
 

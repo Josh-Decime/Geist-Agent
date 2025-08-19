@@ -1,14 +1,16 @@
 # src/geist_agent/poltern.py
 import typer
 from datetime import datetime
-from geist_agent.scrying import ScryingAgent
-from geist_agent.utils import EnvUtils   
 
-# Load env before doing anything else
+from geist_agent.utils import EnvUtils
 EnvUtils.load_env_for_tool()
 
-app = typer.Typer(help="Poltergeist CLI v0.1.2")
+from geist_agent.scrying import ScryingAgent
+from geist_agent import doctor as doctor_mod
 
+app = typer.Typer(help="Poltergeist CLI")
+
+# ---------- scry --------------
 @app.command(
     "scry",
     help="Research a topic and write a report.",
@@ -26,24 +28,15 @@ def scry(
     s.set_topic(topic)
     s.scrying().kickoff(inputs=inputs)
 
-@app.command("doctor", help="Check Ollama connectivity and model availability.")
-def doctor():
-    import os, json, urllib.request
-    base = os.getenv("API_BASE") or "http://localhost:11434"
-    want = (os.getenv("MODEL") or "").split("/", 1)[-1]
-    try:
-        with urllib.request.urlopen(f"{base}/api/tags", timeout=3) as r:
-            data = json.loads(r.read().decode("utf-8"))
-        names = [m["name"] for m in data.get("models", [])]
-        typer.echo(f"Ollama reachable at {base}")
-        typer.echo(f"Installed models: {names}")
-        if want and not any(n.startswith(want) for n in names):
-            raise RuntimeError(f"Model {want!r} not found. Try: ollama pull {want}")
-        typer.secho("✅ Ready", fg="green")
-    except Exception as e:
-        typer.secho(f"❌ Not ready: {e}", fg="red")
-        raise typer.Exit(1)
+# ----------- doctor ----------
+@app.command("doctor", help="Diagnostics (version, env, Ollama, report write).")
+def doctor(
+    as_json: bool = typer.Option(False, "--json", help="Emit JSON instead of rich table"),
+):
+    code = doctor_mod.run(as_json=as_json)
+    raise typer.Exit(code)
 
+# ---------- entry ----------
 def main():
     app()
 
