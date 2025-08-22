@@ -61,13 +61,16 @@ def unveil_cmd(
         "--exclude", help="Exclude path prefixes (repeatable)"
     ),
     ext: Optional[List[str]] = typer.Option(None, "--ext", help="Limit to extensions (repeatable) e.g. --ext .py --ext .ts", show_default=False),
-    max_files: int = typer.Option(800, "--max-files", help="Limit number of files scanned"),
+    max_files: int = typer.Option(200, "--max-files", help="Limit number of files scanned"),
+    use_llm: bool = typer.Option(True, "--llm/--no-llm", help="Generate per-file summaries with your local model"),
 ):
     """
-    QUICK TEST PATH:
-    - Precompute file list + static imports
-    - (No LLM yet) Generate a Markdown report so we can verify end-to-end IO.
+    Hybrid quick path:
+    - Walk files + static deps (precompute)
+    - (Optional) call local LLM per file for JSON summary {role, api[]}
+    - Render Markdown report
     """
+    import os, json
     from pathlib import Path
     from collections import Counter
     from geist_agent.unveil_tools import walk_files, chunk_file, static_imports, render_report
@@ -80,40 +83,86 @@ def unveil_cmd(
         typer.secho(f"Path not found: {root}", fg="red")
         raise typer.Exit(2)
 
-    # 1) Walk files
     files = walk_files(root, include=include, exclude=exclude, exts=exts, max_files=max_files)
     if not files:
         typer.secho("No files matched filters.", fg="yellow")
         raise typer.Exit(0)
 
-    # 2) Chunk + static imports (for now we don’t call an LLM)
+    # Optional LLM helper
+    def llm_file_summary(sample_text: str, rel_path: str) -> dict:
+        """
+        Ask the local model for a concise JSON summary for one file.
+        Falls back quietly if anything goes wrong.
+        """
+        try:
+            import litellm
+            model = os.getenv("MODEL", "ollama/qwen2.5:7b-instruct")
+            api_base = os.getenv("API_BASE", "http://localhost:11434")
+
+            prompt = (
+                "You are a code analyst. Given a single file's content, return a compact JSON with keys:\n"
+                "role: a one-sentence purpose description;\n"
+                "api: array of public-facing functions/classes/methods (names only);\n"
+                "ONLY output JSON. No backticks, no commentary.\n\n"
+                f"File: {rel_path}\n"
+                f"Content sample:\n{sample_text[:2000]}\n"
+            )
+            resp = litellm.completion(
+                model=model,
+                api_base=api_base,  # used by ollama provider
+                messages=[{"role": "user", "content": prompt}],
+                timeout=60,
+            )
+            text = resp.choices[0].message.content if hasattr(resp.choices[0].message, "content") else str(resp)
+            # Be forgiving: extract JSON if wrapped
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                text = text[start:end+1]
+            data = json.loads(text)
+            # ensure shape
+            out = {
+                "role": data.get("role") or "",
+                "api": data.get("api") or [],
+            }
+            if not isinstance(out["api"], list):
+                out["api"] = []
+            return out
+        except Exception:
+            return {"role": "", "api": []}
+
+    from collections import defaultdict
     file_summaries = {}
     externals_counter = Counter()
+
     for p in files:
         rel = p.relative_to(root).as_posix()
-        # Chunking is ready for later LLM passes (not used by render_report yet)
-        _chunks = chunk_file(p, max_chars=4000)
+        chunks = chunk_file(p, max_chars=4000)
         deps = static_imports(p)
-        # Heuristic: count external deps that aren’t obvious relative paths
         for d in deps:
             if not d.startswith((".", "/")):
                 externals_counter[d] += 1
+
+        role, api = "", []
+        if use_llm and chunks:
+            llm = llm_file_summary(chunks[0], rel)
+            role, api = llm.get("role", ""), llm.get("api", [])
+
         file_summaries[rel] = {
-            "role": "",             # LLM will fill later
-            "api": [],              # LLM will fill later
-            "suspects_deps": deps,  # seed signals
-            "callers_guess": [],    # LLM will fill later
+            "role": role,
+            "api": api,
+            "suspects_deps": deps,
+            "callers_guess": [],
         }
 
-    # 3) (Optional) empty graph/components for now — LLM will infer later
+    # Simple empty graph/components for now (linking comes next)
     edges = []
     components = {}
     externals = dict(externals_counter)
 
-    # 4) Seed an empty repo narrative (LLM will fill later)
+    # Seed an overview if you want (kept empty until we add the Architect pass)
     file_summaries["__repo__"] = {"narrative": ""}
 
-    # 5) Render Markdown so you can confirm the pipeline is wired
     out_path = render_report(
         title="Unveil: Codebase Map",
         root=root,
@@ -123,6 +172,7 @@ def unveil_cmd(
         externals=externals,
     )
     typer.secho(f"🗺  Unveil report written to: {out_path}", fg="green")
+
 
 
 # ---------- entry ----------
