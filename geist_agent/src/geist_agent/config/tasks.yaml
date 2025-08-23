@@ -15,32 +15,4 @@ reporting_task:
     A fully fledged report with the main topics, each with a full section of information.
     Formatted as markdown without '```'
   agent: reporting_analyst
-
-# -----------unveil------------
-unveil_scan_and_summarize:
-  description: >
-    Given the inputs (path, include/exclude/exts/max_files), walk files,
-    chunk each file, and for each file ask the File Analyst to produce:
-    { role, api:[], suspects_deps:[], callers_guess:[] }.
-    Also compute static imports for each file for the linker to use.
-  expected_output: >
-    A JSON object: { "files": { "rel/path": {...} }, "static": { "rel/path": [...] } }
-  agent: unveil_file_analyst
-
-unveil_cross_link:
-  description: >
-    Use file summaries and static imports to infer inter-file edges
-    (list of [from, to]) and group files into components {name:[files]}.
-    Try to resolve ambiguous deps by context and file names.
-  expected_output: >
-    A JSON object: { "edges": [[from,to],...], "components": { "comp":[...files] }, "externals": {dep:count} }
-  agent: unveil_linker
-
-unveil_repo_narrative_and_render:
-  description: >
-    Produce a concise narrative for the repository based on the file
-    summaries and inferred edges/components, then render a Markdown report
-    with a Mermaid graph, components, inventory, and externals.
-  expected_output: >
-    The absolute path where the Markdown report was written.
-  agent: unveil_architect
+  
