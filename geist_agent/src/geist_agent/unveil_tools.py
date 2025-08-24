@@ -7,6 +7,82 @@ from collections import Counter, defaultdict
 
 from geist_agent.utils import ReportUtils, PathUtils
 
+from typing import Any
+
+def _format_api_list(api_val: Any, max_items: int = 12) -> list[str]:
+    """Coerce various API representations (strings, dicts, mixed) to a list[str]."""
+    if not isinstance(api_val, list):
+        return []
+
+    out: list[str] = []
+    for item in api_val:
+        if isinstance(item, str):
+            out.append(item)
+            continue
+
+        if isinstance(item, dict):
+            # Prefer a clean signature like: name(param1, param2)
+            name = item.get("name") or item.get("function") or item.get("id")
+            # accept either 'params' (dict) or 'parameters' (list/dict)
+            params = item.get("params", item.get("parameters", []))
+
+            param_names: list[str] = []
+            if isinstance(params, dict):
+                # e.g. {'as_json': {'type': 'bool', 'default': 'False'}}
+                param_names = list(params.keys())
+            elif isinstance(params, list):
+                # e.g. [{'name':'topic','type':'str'}, ...] or just strings
+                for p in params:
+                    if isinstance(p, dict) and "name" in p:
+                        param_names.append(str(p["name"]))
+                    else:
+                        param_names.append(str(p))
+
+            if name:
+                sig = f"{name}({', '.join(param_names)})" if param_names else str(name)
+                out.append(sig)
+            else:
+                # Fallback: short repr
+                out.append(str(item))
+            continue
+
+        # Unknown type (int/tuple/etc.): string it
+        out.append(str(item))
+
+        if len(out) >= max_items:
+            break
+
+    return out[:max_items]
+
+
+def _format_summary_list(summary_val: Any, max_items: int = 8, max_len: int = 300) -> list[str]:
+    """Coerce summary into a list[str] with sensible truncation."""
+    if isinstance(summary_val, str):
+        summary_list = [summary_val]
+    elif isinstance(summary_val, list):
+        summary_list = []
+        for s in summary_val:
+            if isinstance(s, str):
+                summary_list.append(s)
+            elif isinstance(s, dict):
+                # Prefer typical keys if present
+                text = s.get("text") or s.get("description") or s.get("summary") or str(s)
+                summary_list.append(text)
+            else:
+                summary_list.append(str(s))
+    else:
+        summary_list = [str(summary_val)]
+
+    # Trim overly long bullets
+    out: list[str] = []
+    for s in summary_list[:max_items]:
+        s = s.strip()
+        if len(s) > max_len:
+            s = s[:max_len].rstrip() + "…"
+        if s:
+            out.append(s)
+    return out
+
 
 DEFAULT_EXTS = {
     ".py",".js",".mjs",".cjs",".ts",".tsx",".jsx",".css",".html",".htm",
@@ -141,7 +217,14 @@ def _mermaid(edges: List[Tuple[str,str]]) -> str:
     lines.append("```")
     return "\n".join(lines)
 
-def render_report(title: str, root: Path, file_summaries: Dict[str, Dict], edges: List[Tuple[str,str]], components: Dict[str, List[str]], externals: Dict[str,int]) -> Path:
+def render_report(
+    title: str,
+    root: Path,
+    file_summaries: Dict[str, Dict],
+    edges: List[Tuple[str, str]],
+    components: Dict[str, List[str]],
+    externals: Dict[str, int],
+) -> Path:
     md: List[str] = []
     root_label = root.name  # hide full path
     md.append(f"# {title}\n")
@@ -170,19 +253,25 @@ def render_report(title: str, root: Path, file_summaries: Dict[str, Dict], edges
 
     # File-by-file (rich)
     md.append("## Files\n")
-    for rel, d in sorted((k,v) for k,v in file_summaries.items() if k != "__repo__"):
+    for rel, d in sorted((k, v) for k, v in file_summaries.items() if k != "__repo__"):
         md.append(f"### `{rel}`")
         role = d.get("role", "")
         api = d.get("api", []) or []
         summary = d.get("summary", []) or []
+
         if role:
             md.append(f"**Role:** {role}")
-        if api:
-            md.append(f"**API:** {', '.join(api[:12])}")
-        if summary:
+
+        api_strs = _format_api_list(api)
+        if api_strs:
+            md.append(f"**API:** {', '.join(api_strs)}")
+
+        summary_strs = _format_summary_list(summary)
+        if summary_strs:
             md.append("**Summary:**")
-            for line in summary[:8]:
+            for line in summary_strs:
                 md.append(f"- {line}")
+
         md.append("")
 
     # Externals last

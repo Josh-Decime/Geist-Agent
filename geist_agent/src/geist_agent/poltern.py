@@ -57,9 +57,8 @@ def unveil_cmd(
     ),
     ext: List[str] = typer.Option(None, "--ext", show_default=False),
     max_files: int = typer.Option(800, "--max-files"),
-    verbose: bool = typer.Option(True, "--verbose/--no-verbose", help="Show progress"),
 ):
-    out = run_unveil(path, include, exclude, ext, max_files, title="Unveil: Codebase Map", verbose=verbose)
+    out = run_unveil(path, include, exclude, ext, max_files, title="Unveil: Codebase Map", verbose=True)
     typer.secho(f"🗺  Unveil report written to:  {out}", fg="green")
 
 

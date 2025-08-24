@@ -13,6 +13,12 @@ from geist_agent.unveil_tools import (
     infer_edges_and_externals, components_from_paths, render_report
 )
 
+import os, logging
+# Silence CrewAI and friends
+os.environ.setdefault("CREWAI_LOG_LEVEL", "ERROR")
+for name in ("crewai", "langchain", "httpx", "urllib3"):
+    logging.getLogger(name).setLevel(logging.ERROR)
+
 
 # --- helper to obtain agents from unveil_agents.yaml, with safe inline fallback
 def _get_unveil_agents():
@@ -28,8 +34,15 @@ def _get_unveil_agents():
 
     def _mk(name, fallback):
         if name in data:
-            # keep the model lightweight; cap iterations to reduce Ollama load
-            return Agent(config=data[name], verbose=False, max_iter=3, cache=True)
+            # Force quiet + small iterations even if YAML says otherwise
+            return Agent(
+                config=data[name],
+                verbose=False,
+                max_iter=2,              # keep tiny
+                cache=True,
+                max_execution_time=120,  # seconds hard cap
+                respect_context_window=True,
+            )
         return fallback
 
     file_analyst = _mk(
@@ -40,8 +53,10 @@ def _get_unveil_agents():
                   "{role, api[], summary[], suspects_deps[], callers_guess[]}"),
             backstory="Fast, pragmatic code reader focused on useful outputs.",
             verbose=False,
-            max_iter=3,
+            max_iter=2,
             cache=True,
+            max_execution_time=90,
+            respect_context_window=True,
         ),
     )
     architect = _mk(
@@ -52,8 +67,10 @@ def _get_unveil_agents():
                   "collaboration patterns, notable components)."),
             backstory="Communicates architecture clearly for new engineers.",
             verbose=False,
-            max_iter=3,
+            max_iter=1,               # 1 pass is plenty for the overview
             cache=True,
+            max_execution_time=60,
+            respect_context_window=True,
         ),
     )
     return file_analyst, architect
@@ -90,28 +107,52 @@ def run_unveil(
     title: str = "Unveil: Codebase Map",
     verbose: bool = True,
 ) -> Path:
-    _log(verbose, f"🔎 Scanning: {Path(path).resolve()}")
+    # --- tiny local logger so type checkers are happy
+    def _log(show: bool, msg: str) -> None:
+        if show:
+            print(msg, file=sys.stderr, flush=True)
+
+    def _parse_json_maybe_fenced(s: str) -> dict:
+        """Accept plain JSON or ```json fenced blocks; return {} on failure."""
+        txt = str(s).strip()
+        if "```" in txt:
+            # Extract first fenced block if present
+            start = txt.find("```")
+            end = txt.find("```", start + 3)
+            if end > start:
+                block = txt[start + 3:end]
+                # strip possible language tag like "json\n"
+                first_nl = block.find("\n")
+                if first_nl != -1:
+                    block = block[first_nl + 1 :]
+                txt = block.strip()
+        try:
+            return json.loads(txt)
+        except Exception:
+            return {}
+
     include = include or []
     exts = [e.lower() for e in (exts or [])] or None
 
     root = Path(path).resolve()
+    _log(verbose, f"▶ Scanning: {root}")
     files = walk_files(root, include, exclude, exts, max_files)
-    _log(verbose, f"📄 Files found: {len(files)}")
+    _log(verbose, f"• Files found: {len(files)}")
 
     # --- 1) Chunk + static imports
     chunks_map: Dict[str, List[str]] = {}
     static_map: Dict[str, List[str]] = {}
-    t0 = time.time()
     for i, f in enumerate(files, 1):
         rel = f.relative_to(root).as_posix()
         chunks_map[rel] = chunk_file(f)
         static_map[rel] = static_imports(f)
-        if verbose and (i % 25 == 0 or i == len(files)):
-            _log(verbose, f"✂️  Preprocessed {i}/{len(files)} files")
+        if verbose and i % max(1, len(files) // 10) == 0:
+            _log(verbose, f"• Preprocessed {i}/{len(files)} files")
 
     # --- 2) File-level summaries via File Analyst (LLM)
+    start = time.time()
     file_analyst, architect = _get_unveil_agents()
-    _log(verbose, "🧠 Summarizing files with File Analyst…")
+    _log(verbose, "• Summarizing files with File Analyst…")
     summaries: Dict[str, dict] = {}
     for i, (rel, chunks) in enumerate(chunks_map.items(), 1):
         prompt = (
@@ -129,20 +170,30 @@ def run_unveil(
         t = Task(description=prompt, expected_output="Return only valid JSON.")
         try:
             ans = file_analyst.execute_task(t)
-            data = _parse_json_maybe_fenced(str(ans))
+            data = _parse_json_maybe_fenced(ans)
+            if not isinstance(data, dict):
+                data = {}
         except Exception:
-            data = {"role": "", "api": [], "summary": [], "suspects_deps": [], "callers_guess": []}
+            data = {}
+        # fill defaults
+        data = {
+            "role": data.get("role", ""),
+            "api": data.get("api", []) or [],
+            "summary": data.get("summary", []) or [],
+            "suspects_deps": data.get("suspects_deps", []) or [],
+            "callers_guess": data.get("callers_guess", []) or [],
+        }
         summaries[rel] = data
         if verbose and (i % 10 == 0 or i == len(chunks_map)):
-            _log(verbose, f"📝 Summarized {i}/{len(chunks_map)} files")
+            _log(verbose, f"• Summarized {i}/{len(chunks_map)} files")
 
     # --- 3) Static-linking (deterministic) + externals
-    _log(verbose, "🧷 Inferring edges/components…")
+    _log(verbose, "• Inferring edges/components…")
     edges, externals = infer_edges_and_externals(root, files, static_map)
     components = components_from_paths([p.relative_to(root).as_posix() for p in files])
 
     # --- 4) Repo narrative via Architect (LLM)
-    _log(verbose, "🏗️ Writing repo overview with Architect…")
+    _log(verbose, "• Writing repo overview with Architect…")
     compact_roles = "\n".join(f"- {k}: {v.get('role','')}" for k, v in list(summaries.items())[:20])
     prompt_repo = (
         "Write a concise, engineer-friendly overview (8–12 sentences) of this repository:\n"
@@ -154,13 +205,17 @@ def run_unveil(
     )
     arch_task = Task(description=prompt_repo, expected_output="A short Markdown overview.")
     try:
-        narrative = str(architect.execute_task(arch_task)).strip()
-    except Exception:
-        narrative = "Overview not available (architect step failed)."
+        raw = architect.execute_task(arch_task)
+        narrative = str(raw).strip()
+        MAX_CHARS = 5000
+        if len(narrative) > MAX_CHARS:
+            narrative = narrative[:MAX_CHARS] + "\n\n*(truncated)*"
+    except Exception as e:
+        narrative = f"Overview not available (architect step failed: {type(e).__name__})."
     summaries["__repo__"] = {"narrative": narrative}
 
     # --- 5) Render
-    _log(verbose, "🖨️  Rendering report…")
+    _log(verbose, "• Rendering report…")
     out_path = render_report(
         title=title,
         root=root,
@@ -169,5 +224,6 @@ def run_unveil(
         components=components,
         externals=externals,
     )
-    _log(verbose, f"✅ Done in {time.time() - t0:.1f}s")
+    _log(verbose, f"✓ Done in {time.time()-start:.1f}s → {out_path}")
     return out_path
+
