@@ -154,7 +154,12 @@ def run_unveil(
     file_analyst, architect = _get_unveil_agents()
     _log(verbose, "• Summarizing files with File Analyst…")
     summaries: Dict[str, dict] = {}
+
+    total = len(chunks_map)
     for i, (rel, chunks) in enumerate(chunks_map.items(), 1):
+        t0 = time.time()
+        _log(verbose, f"  → Summarizing {rel} ({i}/{total})…")
+
         prompt = (
             "You are analyzing a single code file. "
             "Return *pure JSON* with keys exactly:\n"
@@ -167,15 +172,18 @@ def run_unveil(
             "Context (first 2 chunks):\n"
             + "\n---\n".join(chunks[:2])
         )
+
         t = Task(description=prompt, expected_output="Return only valid JSON.")
         try:
             ans = file_analyst.execute_task(t)
             data = _parse_json_maybe_fenced(ans)
             if not isinstance(data, dict):
                 data = {}
-        except Exception:
+        except Exception as e:
+            _log(verbose, f"    ⚠️ Failed summarizing {rel}: {type(e).__name__}")
             data = {}
-        # fill defaults
+
+        # Fill defaults defensively
         data = {
             "role": data.get("role", ""),
             "api": data.get("api", []) or [],
@@ -183,9 +191,11 @@ def run_unveil(
             "suspects_deps": data.get("suspects_deps", []) or [],
             "callers_guess": data.get("callers_guess", []) or [],
         }
+
         summaries[rel] = data
-        if verbose and (i % 10 == 0 or i == len(chunks_map)):
-            _log(verbose, f"• Summarized {i}/{len(chunks_map)} files")
+        dt = time.time() - t0
+        _log(verbose, f"  ← Done {rel} in {dt:0.1f}s ({i}/{total})")
+
 
     # --- 3) Static-linking (deterministic) + externals
     _log(verbose, "• Inferring edges/components…")
