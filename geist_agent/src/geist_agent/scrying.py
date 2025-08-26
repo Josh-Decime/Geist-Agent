@@ -7,6 +7,7 @@ from geist_agent.utils import ReportUtils
 from geist_agent.utils import PathUtils
 from pathlib import Path
 
+
 @CrewBase
 class ScryingAgent():
     """Scrying crew for divination and research operations"""

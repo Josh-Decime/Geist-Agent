@@ -88,9 +88,9 @@ CHECKS: List[Check] = [
 
 # ---------- rendering ----------
 def _render_summary(results: List[CheckResult]) -> None:
-    ok_count = sum(r.ok for r in results)
+    ok_count = sum(1 for r in results if bool(r.ok))
     all_count = len(results)
-    critical_fail = any((not r.ok) and r.critical for r in results)
+    critical_fail = any((not bool(r.ok)) and r.critical for r in results)
     title = Text(f"Poltergeist Doctor — {_pkg_version()}")
     title.stylize("bold cyan")
     subtitle = Text(f"{ok_count}/{all_count} checks passed • {'All good' if not critical_fail and ok_count==all_count else 'Issues found'}")

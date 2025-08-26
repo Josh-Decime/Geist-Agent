@@ -224,6 +224,8 @@ def render_report(
     edges: List[Tuple[str, str]],
     components: Dict[str, List[str]],
     externals: Dict[str, int],
+    reports_subfolder: str = "unveil_reports",
+    filename_topic: Optional[str] = None,
 ) -> Path:
     md: List[str] = []
     root_label = root.name  # hide full path
@@ -281,7 +283,14 @@ def render_report(
             md.append(f"- `{dep}` ×{cnt}")
         md.append("")
 
-    out_dir = PathUtils.ensure_reports_dir("code_maps")
-    out_path = out_dir / ReportUtils.generate_filename("Unveil")
+    # --- Save report ---
+    out_dir = PathUtils.ensure_reports_dir("unveil_reports")
+
+    # Use repo root name (or fallback title) for filename
+    root_label = root.name or "unknown_root"
+    fname = ReportUtils.generate_filename(filename_topic or root_label)
+
+    out_path = out_dir / fname
     out_path.write_text("\n".join(md), encoding="utf-8")
     return out_path
+

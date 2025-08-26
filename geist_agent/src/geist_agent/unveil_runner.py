@@ -226,6 +226,10 @@ def run_unveil(
 
     # --- 5) Render
     _log(verbose, "• Rendering report…")
+
+    # derive safe base name from the repo root for filename
+    repo_name = root.name or "unknown_root"
+
     out_path = render_report(
         title=title,
         root=root,
@@ -233,7 +237,10 @@ def run_unveil(
         edges=edges,
         components=components,
         externals=externals,
+        reports_subfolder="unveil_reports",
+        filename_topic=root.name,   # 👈 pass Job_Hunter, geist_agent, etc
     )
+
     _log(verbose, f"✓ Done in {time.time()-start:.1f}s → {out_path}")
     return out_path
 

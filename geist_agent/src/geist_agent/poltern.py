@@ -4,7 +4,8 @@ from datetime import datetime
 from typing import List
 
 from geist_agent.utils import EnvUtils
-EnvUtils.load_env_for_tool()
+loaded_sources = EnvUtils.load_env_for_tool()
+print(f"• Loaded .env sources: {loaded_sources}")
 
 from geist_agent.scrying import ScryingAgent
 from geist_agent import doctor as doctor_mod
