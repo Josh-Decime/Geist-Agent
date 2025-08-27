@@ -175,6 +175,16 @@ def _resolve_token_to_file(token: str, all_files: list[Path], root: Path) -> Opt
                 rel = _rel_if_exists(guess)
                 if rel:
                     return rel
+    # Fallback for dotted names when path mapping fails: try the last segment
+    # Example: "geist_agent.utils" → match any file with stem "utils"
+    last = t.split(".")[-1] if "." in t else ""
+    if last:
+        for p in all_files:
+            if p.stem == last:
+                try:
+                    return p.relative_to(root).as_posix()
+                except Exception:
+                    return p.as_posix()  
 
     # Bare name → stem/filename match
     base = Path(t).name
@@ -249,7 +259,10 @@ def render_report(
             md.append("")
 
     # Dependency Graph
-    md.append("## Dependency Graph\n")
+    md.append("## Dependency Graph")
+    if not edges:
+        md.append("_No internal edges inferred (imports not resolved). " 
+                "If this seems wrong, try running with --path pointing at the repo root._")
     md.append(_mermaid(edges))
     md.append("")
 
