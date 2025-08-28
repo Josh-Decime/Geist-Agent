@@ -218,14 +218,52 @@ def components_from_paths(files: list[str]) -> dict[str, list[str]]:
         groups[head].append(rel)
     return dict(groups)
 
-def _mermaid(edges: List[Tuple[str,str]]) -> str:
+def _friendly_labels(paths: list[str]) -> dict[str, str]:
+    """Make short, unique labels by escalating from filename -> parent/filename -> ..."""
+    parts_map = {p: p.split("/") for p in paths}
+    # start with just the filename
+    depth = {p: 1 for p in paths}  # how many tail segments to show
+    while True:
+        labels = {p: "/".join(parts_map[p][-depth[p]:]) for p in paths}
+        # count collisions
+        counts = {}
+        for lbl in labels.values():
+            counts[lbl] = counts.get(lbl, 0) + 1
+        collided = [p for p, lbl in labels.items() if counts[lbl] > 1]
+        if not collided:
+            return labels
+        progressed = False
+        for p in collided:
+            if depth[p] < len(parts_map[p]):  # can add one more parent segment
+                depth[p] += 1
+                progressed = True
+        if not progressed:
+            # we've already promoted all the way to the full rel path; accept as-is
+            return labels
+        
+def _mermaid(edges: List[Tuple[str, str]]) -> str:
+    # Collect all nodes
+    nodes = sorted({a for a, _ in edges} | {b for _, b in edges})
+    # Build short, unique labels
+    labels = _friendly_labels(nodes)
+
+    def _id(rel: str) -> str:
+        # Stable ID: keep using full rel path, sanitized (so edges remain deterministic)
+        return rel.replace('/', '_').replace('.', '_')
+
     lines = ["```mermaid", "graph TD"]
-    for a,b in edges:
-        sa = a.replace('/','_').replace('.','_')
-        sb = b.replace('/','_').replace('.','_')
-        lines.append(f"  {sa} --> {sb}")
+    # Declare nodes with labels once
+    for n in nodes:
+        nid = _id(n)
+        lbl = labels[n]
+        # rectangular nodes with the short label
+        lines.append(f'  {nid}["{lbl}"]')
+    # Draw edges using the same IDs
+    for a, b in edges:
+        lines.append(f"  {_id(a)} --> {_id(b)}")
     lines.append("```")
     return "\n".join(lines)
+
 
 def render_report(
     title: str,
