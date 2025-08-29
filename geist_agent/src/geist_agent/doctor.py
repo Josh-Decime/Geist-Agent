@@ -1,6 +1,5 @@
 # src/geist_agent/doctor.py
 from __future__ import annotations
-# ---------- imports ----------
 import os, json, sys, urllib.request
 from dataclasses import dataclass
 from importlib.metadata import version, PackageNotFoundError

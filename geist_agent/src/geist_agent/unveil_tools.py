@@ -9,6 +9,8 @@ from geist_agent.utils import ReportUtils, PathUtils
 
 from typing import Any
 
+
+# ---------- formatting helpers (API, summaries) ----------
 def _format_api_list(api_val: Any, max_items: int = 12) -> list[str]:
     """Coerce various API representations (strings, dicts, mixed) to a list[str]."""
     if not isinstance(api_val, list):
@@ -84,15 +86,17 @@ def _format_summary_list(summary_val: Any, max_items: int = 8, max_len: int = 30
     return out
 
 
+# ---------- constants & directory filters ----------
 DEFAULT_EXTS = {
     ".py",".js",".mjs",".cjs",".ts",".tsx",".jsx",".css",".html",".htm",
-    ".java",".c",".h",".hpp",".hh",".cc",".cpp",".cs",".sql"
+    ".java",".kt",".kts",".c",".h",".hpp",".hh",".cc",".cpp",".cs",".sql",
+    ".go",".rb",".php"
 }
 SKIP_DIRS = {".git",".hg",".svn",".venv","venv","__pycache__","node_modules",
              ".mypy_cache",".pytest_cache",".ruff_cache",".idea",".vscode",
              "dist","build",".egg-info","target","out"}
 
-# ---------- Walk ----------
+# ---------- file walking ----------
 def walk_files(root: Path, include: Iterable[str], exclude: Iterable[str],
                exts: Optional[Iterable[str]], max_files: int) -> List[Path]:
     inc = [i.rstrip("/\\") for i in (include or [])]
@@ -115,7 +119,7 @@ def walk_files(root: Path, include: Iterable[str], exclude: Iterable[str],
                 return found
     return found
 
-# ---------- Chunk ----------
+# ---------- chunking ----------
 def chunk_file(p: Path, max_chars: int = 6000) -> List[str]:
     txt = p.read_text(encoding="utf-8", errors="replace")
     # naive chunking (we can improve per language later)
@@ -126,28 +130,96 @@ def chunk_file(p: Path, max_chars: int = 6000) -> List[str]:
         cur += max_chars
     return chunks
 
-# ---------- Static imports (seed signals) ----------
+# ---------- static import patterns (regex) ----------
 PY_IMPORT_RE = re.compile(r'^\s*(?:from\s+([a-zA-Z0-9_\.]+)\s+import|import\s+([a-zA-Z0-9_\.]+))', re.MULTILINE)
 JS_IMPORT_RE = re.compile(r'^\s*import\s+.*?from\s+[\'"]([^\'"]+)[\'"]|^\s*import\s+[\'"]([^\'"]+)[\'"]|require\([\'"]([^\'"]+)[\'"]\)', re.MULTILINE)
 C_CPP_INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
 
+JAVA_IMPORT_RE   = re.compile(r'^\s*import\s+([a-zA-Z_][\w\.]*);', re.MULTILINE)
+KOTLIN_IMPORT_RE = re.compile(r'^\s*import\s+([a-zA-Z_][\w\.]*)(?:\s+as\s+\w+)?', re.MULTILINE)
+CSHARP_USING_RE  = re.compile(r'^\s*using\s+(?:static\s+)?([a-zA-Z_][\w\.]*)(?:\s*=\s*[a-zA-Z_][\w\.]*)?;', re.MULTILINE)
+
+PHP_REQUIRE_RE   = re.compile(r'(?:require|include)(?:_once)?\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)', re.IGNORECASE)
+RUBY_REQUIRE_RE  = re.compile(r'^\s*require(?:_relative)?\s*[\'"]([^\'"]+)[\'"]', re.MULTILINE)
+
+CSS_IMPORT_RE    = re.compile(r'@import\s+(?:url\()?["\']?([^"\')]+)', re.IGNORECASE)
+HTML_SRC_HREF_RE = re.compile(r'\b(?:src|href)\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+# ---------- language helpers ----------
+def _go_imports(txt: str) -> list[str]:
+    tokens: list[str] = []
+    # single-line: import "pkg/path"
+    tokens += re.findall(r'^\s*import\s+"([^"]+)"', txt, re.MULTILINE)
+    # block:
+    for block in re.findall(r'^\s*import\s*\(\s*([\s\S]*?)\)\s*', txt, re.MULTILINE):
+        tokens += re.findall(r'^\s*"([^"]+)"', block, re.MULTILINE)
+    return tokens
+
+
+# ---------- static import extraction ----------
 def static_imports(p: Path) -> List[str]:
     txt = p.read_text(encoding="utf-8", errors="replace")
     sfx = p.suffix.lower()
+    toks: list[str] = []
+
     if sfx == ".py":
-        return [x for g in PY_IMPORT_RE.findall(txt) for x in g if x]
-    if sfx in {".js",".mjs",".cjs",".ts",".tsx",".jsx"}:
-        return [next((g for g in m.groups() if g), "") for m in JS_IMPORT_RE.finditer(txt) if next((g for g in m.groups() if g), "")]
-    if sfx in {".c",".h",".hpp",".hh",".cc",".cpp"}:
-        return [m.group(1) for m in C_CPP_INCLUDE_RE.finditer(txt)]
-    # light: skip others for now (can add java/csharp/html/css/sql as needed)
-    return []
+        toks = [x for g in PY_IMPORT_RE.findall(txt) for x in g if x]
+
+    elif sfx in {".js",".mjs",".cjs",".ts",".tsx",".jsx"}:
+        toks = [next((g for g in m.groups() if g), "") for m in JS_IMPORT_RE.finditer(txt)
+                if next((g for g in m.groups() if g), "")]
+
+    elif sfx in {".c",".h",".hpp",".hh",".cc",".cpp"}:
+        toks = [m.group(1) for m in C_CPP_INCLUDE_RE.finditer(txt)]
+
+    elif sfx in {".java"}:
+        toks = JAVA_IMPORT_RE.findall(txt)
+
+    elif sfx in {".kt",".kts"}:
+        toks = KOTLIN_IMPORT_RE.findall(txt)
+
+    elif sfx == ".cs":
+        toks = CSHARP_USING_RE.findall(txt)
+
+    elif sfx == ".go":
+        toks = _go_imports(txt)
+
+    elif sfx == ".php":
+        toks = PHP_REQUIRE_RE.findall(txt)
+
+    elif sfx == ".rb":
+        toks = RUBY_REQUIRE_RE.findall(txt)
+
+    elif sfx == ".css":
+        toks = CSS_IMPORT_RE.findall(txt)
+
+    elif sfx in {".html",".htm"}:
+        toks = HTML_SRC_HREF_RE.findall(txt)
+
+    # normalize and dedupe while preserving order
+    norm = []
+    seen = set()
+    for t in toks:
+        t = t.replace("\\", "/").strip()
+        if not t:
+            continue
+        if t not in seen:
+            seen.add(t)
+            norm.append(t)
+    return norm
+
 
 # ---------- Linking, graph & components ----------
-def _resolve_token_to_file(token: str, all_files: list[Path], root: Path) -> Optional[str]:
-    t = token.strip().rstrip(":")
+def _resolve_token_to_file(token: str, all_files: list[Path], root: Path, source_file: Optional[Path] = None) -> Optional[str]:
+    t = token.strip()
     if not t:
         return None
+    # ignore URLs / non-file schemes
+    tl = t.lower()
+    if tl.startswith(("http://","https://","//","data:","mailto:","tel:","#")):
+        return None
+    t = t.replace("\\", "/").rstrip(":")
 
     def _rel_if_exists(p: Path) -> Optional[str]:
         if p.exists():
@@ -157,36 +229,78 @@ def _resolve_token_to_file(token: str, all_files: list[Path], root: Path) -> Opt
                 return p.as_posix()
         return None
 
-    # ./ or ../ (JS/TS common)
-    if t.startswith("./") or t.startswith("../"):
-        cand = (root / t).resolve()
-        for extra in ["", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".h", ".hpp", ".hh", ".cc", ".cpp"]:
-            p = cand if extra == "" else cand.with_suffix(extra)
-            rel = _rel_if_exists(p)
+    def _resolve_path_candidate(cand: Path) -> Optional[str]:
+        # direct file
+        rel = _rel_if_exists(cand)
+        if rel:
+            return rel
+        # try with common suffixes
+        exts_try = ["", ".py",".ts",".tsx",".js",".jsx",".mjs",".cjs",".css",".html",".htm",
+                    ".go",".rb",".php",".java",".kt",".kts",".c",".h",".hpp",".hh",".cc",".cpp",".cs"]
+        for sx in exts_try:
+            p2 = cand if sx == "" else cand.with_suffix(sx)
+            rel = _rel_if_exists(p2)
             if rel:
                 return rel
+        # directory index (Node-ish)
+        if cand.is_dir():
+            for base in ["index.ts","index.tsx","index.js","index.jsx","index.mjs","index.cjs","__init__.py"]:
+                rel = _rel_if_exists(cand / base)
+                if rel:
+                    return rel
+        return None
 
-    # Python dotted module → try under root and under root/src
+    # 1) relative like ./ or ../ → from source file dir if possible
+    if t.startswith("./") or t.startswith("../"):
+        base = (source_file.parent if source_file else root)
+        cand = (base / t).resolve()
+        hit = _resolve_path_candidate(cand)
+        if hit:
+            return hit
+
+    # 2) site-absolute like /assets/app.js → from repo root
+    if t.startswith("/"):
+        cand = (root / t.lstrip("/")).resolve()
+        hit = _resolve_path_candidate(cand)
+        if hit:
+            return hit
+
+    # 3) bare-ish path with slashes (e.g., "lib/util", "pkg/sub")
+    if "/" in t:
+        # try relative to source then root
+        for base in ([source_file.parent] if source_file else []) + [root]:
+            cand = (base / t).resolve()
+            hit = _resolve_path_candidate(cand)
+            if hit:
+                return hit
+
+    # 4) dotted module → try under common language roots
     if "." in t and "/" not in t:
         mod = t.replace(".", "/")
-        for base in [root, root / "src"]:
-            for suff in [".py", "/__init__.py"]:
+        lang_bases = [
+            root / "src" / "main" / "java",
+            root / "src" / "main" / "kotlin",
+            root / "src",
+            root
+        ]
+        for base in lang_bases:
+            for suff in [".py",".java",".kt",".kts",".cs","/__init__.py"]:
                 guess = base / f"{mod}{suff}"
                 rel = _rel_if_exists(guess)
                 if rel:
                     return rel
-    # Fallback for dotted names when path mapping fails: try the last segment
-    # Example: "geist_agent.utils" → match any file with stem "utils"
-    last = t.split(".")[-1] if "." in t else ""
+
+    # 5) last-segment rescue for dotted or slashed names
+    last = t.split("/")[-1].split(".")[-1] if "/" in t else (t.split(".")[-1] if "." in t else t)
     if last:
         for p in all_files:
             if p.stem == last:
                 try:
                     return p.relative_to(root).as_posix()
                 except Exception:
-                    return p.as_posix()  
+                    return p.as_posix()
 
-    # Bare name → stem/filename match
+    # 6) bare filename (exact or stem)
     base = Path(t).name
     stem = Path(base).stem
     for p in all_files:
@@ -195,15 +309,18 @@ def _resolve_token_to_file(token: str, all_files: list[Path], root: Path) -> Opt
     for p in all_files:
         if p.stem == stem:
             return p.relative_to(root).as_posix()
+
     return None
+
 
 def infer_edges_and_externals(root: Path, files: list[Path], static_map: dict[str, list[str]]) -> tuple[list[tuple[str,str]], dict[str,int]]:
     by_rel = {f.relative_to(root).as_posix(): f for f in files}
     edges: list[tuple[str,str]] = []
     externals = Counter()
     for rel, tokens in static_map.items():
+        src_path = by_rel.get(rel)
         for tok in tokens:
-            target = _resolve_token_to_file(tok, files, root)
+            target = _resolve_token_to_file(tok, files, root, src_path)
             if target and target != rel:
                 edges.append((rel, target))
             else:
@@ -211,6 +328,8 @@ def infer_edges_and_externals(root: Path, files: list[Path], static_map: dict[st
                     externals[tok] += 1
     return edges, dict(externals)
 
+
+# ---------- component grouping ----------
 def components_from_paths(files: list[str]) -> dict[str, list[str]]:
     groups: dict[str, list[str]] = defaultdict(list)
     for rel in files:
@@ -218,6 +337,8 @@ def components_from_paths(files: list[str]) -> dict[str, list[str]]:
         groups[head].append(rel)
     return dict(groups)
 
+
+# ---------- graph labeling ----------
 def _friendly_labels(paths: list[str]) -> dict[str, str]:
     """Make short, unique labels by escalating from filename -> parent/filename -> ..."""
     parts_map = {p: p.split("/") for p in paths}
@@ -241,6 +362,8 @@ def _friendly_labels(paths: list[str]) -> dict[str, str]:
             # we've already promoted all the way to the full rel path; accept as-is
             return labels
         
+
+# ---------- mermaid rendering ----------
 def _mermaid(edges: List[Tuple[str, str]]) -> str:
     # Collect all nodes
     nodes = sorted({a for a, _ in edges} | {b for _, b in edges})
@@ -265,6 +388,7 @@ def _mermaid(edges: List[Tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
+# ---------- report rendering ----------
 def render_report(
     title: str,
     root: Path,
@@ -297,7 +421,7 @@ def render_report(
             md.append("")
 
     # Dependency Graph
-    md.append("## Dependency Graph")
+    md.append("## Dependency Graph\n")
     if not edges:
         md.append("_No internal edges inferred (imports not resolved). " 
                 "If this seems wrong, try running with --path pointing at the repo root._")

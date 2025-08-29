@@ -20,7 +20,7 @@ for name in ("crewai", "langchain", "httpx", "urllib3"):
     logging.getLogger(name).setLevel(logging.ERROR)
 
 
-# --- helper to obtain agents from unveil_agents.yaml, with safe inline fallback
+# ---------- agents: load configs (YAML with safe fallbacks) ----------
 def _get_unveil_agents():
     from pathlib import Path
     import yaml
@@ -76,6 +76,8 @@ def _get_unveil_agents():
     return file_analyst, architect
 
 
+# NOT BEING CALLED DELETE & VERIFY NO ISSUES
+# ---------- tiny CLI utils (stdout logger, JSON fence parser) ----------
 def _log(enabled: bool, msg: str):
     if enabled:
         print(msg, file=sys.stdout, flush=True)
@@ -98,6 +100,7 @@ def _parse_json_maybe_fenced(s: str) -> dict:
         return {"role": "", "api": [], "summary": [], "suspects_deps": [], "callers_guess": []}
 
 
+# ---------- command entry ----------
 def run_unveil(
     path: str,
     include: Optional[List[str]],
