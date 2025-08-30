@@ -90,7 +90,7 @@ def _format_summary_list(summary_val: Any, max_items: int = 8, max_len: int = 30
 DEFAULT_EXTS = {
     ".py",".js",".mjs",".cjs",".ts",".tsx",".jsx",".css",".html",".htm",
     ".java",".kt",".kts",".c",".h",".hpp",".hh",".cc",".cpp",".cs",".sql",
-    ".go",".rb",".php"
+    ".go",".rb",".php", ".vue"
 }
 SKIP_DIRS = {".git",".hg",".svn",".venv","venv","__pycache__","node_modules",
              ".mypy_cache",".pytest_cache",".ruff_cache",".idea",".vscode",

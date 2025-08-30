@@ -5,6 +5,7 @@ from typing import List, Optional, Dict
 import json
 import sys
 import time
+from contextlib import contextmanager
 
 from crewai import Task
 # NOTE: we intentionally do NOT import UnveilCrew here to avoid any accidental CrewBase bootstrapping.
@@ -19,6 +20,32 @@ os.environ.setdefault("CREWAI_LOG_LEVEL", "ERROR")
 for name in ("crewai", "langchain", "httpx", "urllib3"):
     logging.getLogger(name).setLevel(logging.ERROR)
 
+# --- per-tool LLM env overlays (UNVEIL_*) ---
+_LLM_KEYS = [
+    "MODEL", "API_BASE",
+    "OPENAI_API_KEY", "AZURE_OPENAI_API_KEY", "AZURE_OPENAI_ENDPOINT",
+    "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
+    "XAI_API_KEY", "COHERE_API_KEY", "MISTRAL_API_KEY", "OPENROUTER_API_KEY",
+]
+
+def _apply_prefixed_env(prefix: str):
+    for key in _LLM_KEYS:
+        val = os.getenv(f"{prefix}_{key}")
+        if val:
+            os.environ[key] = val
+
+@contextmanager
+def _llm_profile(prefix: str):
+    saved = {k: os.environ.get(k) for k in _LLM_KEYS}
+    try:
+        _apply_prefixed_env(prefix)
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 # ---------- agents: load configs (YAML with safe fallbacks) ----------
 def _get_unveil_agents():
@@ -154,7 +181,18 @@ def run_unveil(
 
     # --- 2) File-level summaries via File Analyst (LLM)
     start = time.time()
-    file_analyst, architect = _get_unveil_agents()
+    # Load .env if your utils provide it (safe if missing)
+    try:
+        from geist_agent.utils import EnvUtils
+        if hasattr(EnvUtils, "load_env_for_tool"):
+            EnvUtils.load_env_for_tool()
+    except Exception:
+        pass
+
+    # Apply UNVEIL_* overrides just for agent creation/execution
+    with _llm_profile("UNVEIL"):
+        file_analyst, architect = _get_unveil_agents()
+
     _log(verbose, "• Summarizing files with File Analyst…")
     summaries: Dict[str, dict] = {}
 
