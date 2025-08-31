@@ -13,6 +13,7 @@ from geist_agent.unveil_runner import run_unveil
 
 app = typer.Typer(help="Poltergeist CLI")
 
+
 # ---------- scry --------------
 @app.command(
     "scry",
@@ -31,6 +32,7 @@ def scry(
     s.set_topic(topic)
     s.scrying().kickoff(inputs=inputs)
 
+
 # ----------- doctor ----------
 @app.command("doctor", help="Diagnostics (version, env, Ollama, report write).")
 def doctor(
@@ -38,6 +40,7 @@ def doctor(
 ):
     code = doctor_mod.run(as_json=as_json)
     raise typer.Exit(code)
+
 
 # ---------- unveil ----------
 @app.command(
@@ -62,6 +65,7 @@ def unveil_cmd(
     out = run_unveil(path, include, exclude, ext, max_files, title="Unveil: Codebase Map", verbose=True)
     typer.secho(f"🗺  Unveil report written to:  {out}", fg="green")
 
+
 # ---------- ward --------------
 @app.command("ward", help="Run security audit (OSV + secrets + risky patterns + LLM recommendations)")
 def ward_cmd(
@@ -75,6 +79,7 @@ def ward_cmd(
     no_redact: bool = typer.Option(False, "--no-redact", help="Do NOT redact secrets (discouraged)"),
     preview: bool = typer.Option(False, "--preview", help="Masked preview for secrets"),
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM recommendations"),
+    json: bool = typer.Option(False, "--json", help="Also write a JSON artifact for CI/diffs"),
 ):
     from geist_agent.ward_runner import run_ward
     out = run_ward(
@@ -87,10 +92,10 @@ def ward_cmd(
         use_osv=not no_osv,
         redact=not no_redact,
         preview=preview,
-        llm=not no_llm,  # ON by default
+        llm=not no_llm,         # ON by default
+        write_json=json,        # OFF by default; enable with --json
     )
     typer.secho(f"🛡  Ward report written to: {out}", fg="green")
-
 
 
 # ---------- entry ----------

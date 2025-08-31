@@ -14,7 +14,12 @@ from typing import Dict, List, Optional, Tuple
 from contextlib import contextmanager
 
 from geist_agent.utils import PathUtils
-from geist_agent.unveil_tools import walk_files  # reuse your walker
+from geist_agent.unveil_tools import walk_files  
+
+# ---------- tiny logger ----------
+def _log(enabled: bool, msg: str):
+    if enabled:
+        print(msg, file=sys.stderr, flush=True)
 
 
 # ---------- data types ----------
@@ -273,14 +278,25 @@ def _get_ward_advisor():
 
 
 def _llm_recommendations_with(advisor, vulns: List[Vuln], secrets: List[SecretHit], issues: List[Issue]) -> str:
+    # If nothing was found, don't invoke the LLM; provide concise hygiene guidance.
+    if not (vulns or secrets or issues):
+        return (
+            "No dependency vulnerabilities, secrets, or risky patterns were detected in this scan.\n\n"
+            "**Keep in mind:** absence of findings ≠ absolute security. Threats evolve and coverage is imperfect.\n"
+            "- Re-scan regularly (after dependency updates and before releases).\n"
+            "- Enable automated dependency updates and lockfile hygiene.\n"
+            "- Consider a CI policy to block new secrets or High/Critical CVEs.\n"
+        )
+
     if advisor is None:
         return ""
+
     try:
         from crewai import Task
 
         def _shorten(vs: List[Vuln], n: int = 50):
-            order = {"CRITICAL":4,"HIGH":3,"MEDIUM":2,"LOW":1,"UNKNOWN":0}
-            vs = sorted(vs, key=lambda x: (-order.get(x.severity,0), x.ecosystem, x.package))
+            order = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
+            vs = sorted(vs, key=lambda x: (-order.get(x.severity, 0), x.ecosystem, x.package))
             return [
                 {"id": v.id, "sev": v.severity, "pkg": f"{v.ecosystem}:{v.package}@{v.version}", "sum": v.summary[:140]}
                 for v in vs[:n]
@@ -306,6 +322,7 @@ def _llm_recommendations_with(advisor, vulns: List[Vuln], secrets: List[SecretHi
         return str(out).strip()
     except Exception:
         return ""
+
 
 
 # ---------- summarize & render ----------
@@ -384,47 +401,74 @@ def run_ward(
     use_osv: bool = True,
     redact: bool = True,
     preview: bool = False,
-    llm: bool = True,  # LLM ON by default
+    llm: bool = True,        # LLM ON by default
+    write_json: bool = False # JSON is OFF by default; enable with --json
 ) -> Path:
     root = Path(path).resolve()
+    _log(verbose, f"▶ Ward scanning root: {root}")
+
     files = walk_files(root, include or [], exclude or [], [e.lower() for e in (exts or [])] or None, max_files)
+    _log(verbose, f"• Files discovered: {len(files)}")
 
-    if verbose:
-        print(f"[ward] scanning {len(files)} files under {root}", file=sys.stderr)
+    # 1) Dependency vulnerabilities (optional OSV)
+    vulns: List[Vuln] = []
+    if use_osv:
+        exe = _which("osv-scanner")
+        if not exe:
+            _log(verbose, "• OSV-Scanner not found on PATH — skipping dependency CVE scan.")
+            _log(verbose, "  tip: install it for deeper coverage (e.g., choco install osv-scanner, scoop install osv-scanner, or see https://github.com/google/osv-scanner)")
+        else:
+            _log(verbose, "• Running OSV-Scanner…")
+            vulns = _osv_scan(root)
+            sev = _sev_counts(vulns)
+            _log(verbose, f"  ← OSV complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})")
+    else:
+        _log(verbose, "• Skipping OSV-Scanner (disabled)")
 
-    vulns: List[Vuln] = _osv_scan(root) if use_osv else []
+
+    # 2) Secrets + risky patterns
+    _log(verbose, "• Scanning for secrets and risky patterns…")
     secrets, issues = scan_secrets_and_issues(files, root, redact=redact, preview=preview, risky_context=80)
+    _log(verbose, f"  ← Text scan complete: {len(secrets)} secrets, {len(issues)} risky patterns")
 
+    # 3) LLM recommendations
     recommendations_md = ""
     if llm:
-        # If you have a loader, let it hydrate env; otherwise harmless no-op.
+        _log(verbose, "• Generating LLM recommendations…")
         try:
             from geist_agent.utils import EnvUtils
             if hasattr(EnvUtils, "load_env_for_tool"):
                 EnvUtils.load_env_for_tool()
         except Exception:
             pass
-
-        # Apply WARD_* env overlay just for the LLM work
         with _llm_profile("WARD"):
             advisor = _get_ward_advisor()
             recommendations_md = _llm_recommendations_with(advisor, vulns, secrets, issues)
+        _log(verbose, "  ← LLM step complete")
+    else:
+        _log(verbose, "• Skipping LLM recommendations (disabled)")
 
+    # 4) Render & write (topic = repo root, just like Unveil)
+    _log(verbose, "• Rendering Ward report…")
+    from geist_agent.utils import ReportUtils  # local import to avoid cycles
     out_dir = PathUtils.ensure_reports_dir("ward_reports")
-    out_md = out_dir / f"ward_{int(time.time())}.md"
-    out_json = save_ward_json(root, vulns, secrets, issues)
+    topic = root.name or "unknown_root"
+    md_name = ReportUtils.generate_filename(topic)  # mirror Unveil naming
+    out_md = out_dir / md_name
 
     md = render_ward_markdown("Ward: Security Audit", root, vulns, secrets, issues, recommendations_md=recommendations_md)
     out_md.write_text(md, encoding="utf-8")
+    _log(verbose, f"✓ Markdown written: {out_md}")
 
-    if verbose:
-        sev = _sev_counts(vulns)
-        print(f"[ward] vulns: {len(vulns)} (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})", file=sys.stderr)
-        print(f"[ward] secrets: {len(secrets)}, risky patterns: {len(issues)}", file=sys.stderr)
-        print(f"[ward] wrote: {out_md}", file=sys.stderr)
-        print(f"[ward] json:  {out_json}", file=sys.stderr)
+    if write_json:
+        out_json = save_ward_json(root, vulns, secrets, issues)
+        _log(verbose, f"✓ JSON written:     {out_json}")
+    else:
+        _log(verbose, "• Skipping JSON output (Add --json to generate)")
 
+    _log(verbose, "• Done.")
     return out_md
+
 
 
 def main():
