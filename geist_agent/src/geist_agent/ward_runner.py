@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from contextlib import contextmanager
+import urllib.request
+import urllib.error
 
 from geist_agent.utils import PathUtils
 from geist_agent.unveil_tools import walk_files  
@@ -121,6 +123,133 @@ def _collect_manifests(root: Path) -> List[str]:
                 found.append(str(Path(cur, f)))
     return found
 
+# === OSV API FALLBACK: dependency collectors ===
+def _collect_pinned_deps_for_osv(root: Path) -> List[Dict[str, str]]:
+    """
+    Return a list of dicts: {"ecosystem": "PyPI|npm", "name": "...", "version": "..."}
+    Only collects *pinned* versions so OSV can give deterministic answers.
+    Supports:
+      - Python: requirements*.txt, pyproject.toml (tomllib if available)
+      - Node: package-lock.json (preferred), package.json (pinned only)
+    """
+    deps: List[Dict[str, str]] = []
+
+    # --- Python: requirements*.txt ---
+    for req in root.rglob("requirements*.txt"):
+        try:
+            for line in req.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if not s or s.startswith("#"):
+                    continue
+                if "==" in s:  # pkg==1.2.3
+                    name, ver = s.split("==", 1)
+                    name = name.split("[", 1)[0].strip()
+                    ver = ver.strip()
+                    if name and ver:
+                        deps.append({"ecosystem": "PyPI", "name": name, "version": ver})
+        except Exception:
+            pass
+
+    # --- Python: pyproject.toml (requires python 3.11+ tomllib) ---
+    try:
+        import tomllib  # type: ignore
+        for pp in root.rglob("pyproject.toml"):
+            try:
+                data = tomllib.loads(pp.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+            # PEP 621 deps
+            for spec in (data.get("project", {}).get("dependencies") or []):
+                name, ver = _pep_dep_exact(spec)
+                if name and ver:
+                    deps.append({"ecosystem": "PyPI", "name": name, "version": ver})
+
+            # optional-dependencies
+            for _group, items in (data.get("project", {}).get("optional-dependencies") or {}).items():
+                for spec in items or []:
+                    name, ver = _pep_dep_exact(spec)
+                    if name and ver:
+                        deps.append({"ecosystem": "PyPI", "name": name, "version": ver})
+
+            # Poetry block (tool.poetry.dependencies)
+            poetry = data.get("tool", {}).get("poetry", {})
+            for name, spec in (poetry.get("dependencies") or {}).items():
+                if name.lower() == "python":
+                    continue
+                ver = _poetry_exact_version(spec)
+                if name and ver:
+                    deps.append({"ecosystem": "PyPI", "name": name, "version": ver})
+    except ModuleNotFoundError:
+        pass
+
+    # --- Node: package-lock.json (npm v7+ format preferred) ---
+    for lock in root.rglob("package-lock.json"):
+        try:
+            data = json.loads(lock.read_text(encoding="utf-8"))
+            pkgs = data.get("packages") or {}
+            # npm v7+ writes "packages": { "node_modules/pkg": { "version": "x.y.z" }, ... }
+            for path_key, entry in pkgs.items():
+                if not isinstance(entry, dict):
+                    continue
+                if path_key and path_key.startswith("node_modules/"):
+                    name = path_key.split("/", 1)[1]
+                    ver = entry.get("version")
+                    if name and ver:
+                        deps.append({"ecosystem": "npm", "name": name, "version": ver})
+        except Exception:
+            pass
+
+    # --- Node: package.json (only keep fully pinned) ---
+    for pj in root.rglob("package.json"):
+        try:
+            data = json.loads(pj.read_text(encoding="utf-8"))
+            for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+                m = data.get(section) or {}
+                for name, spec in m.items():
+                    ver = _npm_semver_exact(spec)
+                    if name and ver:
+                        deps.append({"ecosystem": "npm", "name": name, "version": ver})
+        except Exception:
+            pass
+
+    # dedupe
+    seen = set()
+    uniq: List[Dict[str, str]] = []
+    for d in deps:
+        key = (d["ecosystem"], d["name"], d["version"])
+        if key not in seen:
+            seen.add(key)
+            uniq.append(d)
+    return uniq
+
+
+def _pep_dep_exact(spec: str) -> Tuple[str, Optional[str]]:
+    """Return (name, exact_version|None) for PEP 508-ish specs (only '==')."""
+    s = (spec or "").strip().split(";", 1)[0]
+    name = s.split("[", 1)[0].strip()
+    if "==" in s:
+        return name, s.split("==", 1)[1].strip()
+    return name, None
+
+
+def _poetry_exact_version(spec) -> Optional[str]:
+    """Return exact version when Poetry dep is a concrete string or {version: 'x.y.z'}."""
+    if isinstance(spec, str):
+        return spec if spec[:1].isdigit() else None
+    if isinstance(spec, dict):
+        v = spec.get("version")
+        return v if isinstance(v, str) and v[:1].isdigit() else None
+    return None
+
+
+def _npm_semver_exact(spec: str) -> Optional[str]:
+    """Only accept exact x.y.z (ignore ^ ~ ranges etc.)."""
+    s = (spec or "").strip()
+    s = s.lstrip("^~").split("||")[0].strip()
+    import re as _re
+    return s if _re.fullmatch(r"\d+\.\d+\.\d+(?:[-+].+)?", s) else None
+
 
 # ---------- scanners: dependency vulns via OSV-Scanner (optional) ----------
 def _osv_scan(root: Path) -> List[Vuln]:
@@ -173,6 +302,67 @@ def _osv_scan(root: Path) -> List[Vuln]:
                     summary=summary or ""
                 ))
     return vulns
+
+# === OSV API FALLBACK: API scanner ===
+def _osv_api_scan(root: Path, verbose: bool = True) -> List[Vuln]:
+    """
+    Manual OSV check using https://api.osv.dev/v1/querybatch
+    Builds queries from pinned dependency manifests discovered in the repo.
+    """
+    _log(verbose, "• Collecting pinned dependencies for OSV API…")
+    deps = _collect_pinned_deps_for_osv(root)
+    if not deps:
+        _log(verbose, "  ← No pinned deps found to query; skipping OSV API.")
+        return []
+
+    payload = {
+        "queries": [
+            {"package": {"name": d["name"], "ecosystem": d["ecosystem"]}, "version": d["version"]} for d in deps
+        ]
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url="https://api.osv.dev/v1/querybatch",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    _log(verbose, f"• Contacting OSV API with {len(deps)} queries…")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+            obj = json.loads(raw)
+    except urllib.error.URLError as e:
+        _log(verbose, f"  ! OSV API network error: {e}")
+        return []
+    except Exception as e:
+        _log(verbose, f"  ! OSV API error: {e}")
+        return []
+
+    def _max_sev(sev_list: List[dict]) -> str:
+        txt = json.dumps(sev_list).upper()
+        if "CRITICAL" in txt: return "CRITICAL"
+        if "HIGH" in txt:     return "HIGH"
+        if "MEDIUM" in txt:   return "MEDIUM"
+        if "LOW" in txt:      return "LOW"
+        return "UNKNOWN"
+
+    findings: List[Vuln] = []
+    for d, res in zip(deps, obj.get("results", [])):
+        vulns = res.get("vulns") or []
+        for v in vulns:
+            findings.append(Vuln(
+                id=v.get("id", "") or "",
+                ecosystem=d["ecosystem"],
+                package=d["name"],
+                version=d["version"],
+                severity=_max_sev(v.get("severity", []) or []),
+                summary=(v.get("summary") or v.get("details", "")[:140]) or "",
+            ))
+
+    _log(verbose, f"  ← OSV API complete: {len(findings)} vulns")
+    return findings
 
 
 # ---------- scanners: secrets & insecure patterns ----------
@@ -410,20 +600,26 @@ def run_ward(
     files = walk_files(root, include or [], exclude or [], [e.lower() for e in (exts or [])] or None, max_files)
     _log(verbose, f"• Files discovered: {len(files)}")
 
-    # 1) Dependency vulnerabilities (optional OSV)
+    # 1) Dependency vulnerabilities (OSV CLI or API fallback)
     vulns: List[Vuln] = []
     if use_osv:
         exe = _which("osv-scanner")
-        if not exe:
-            _log(verbose, "• OSV-Scanner not found on PATH — skipping dependency CVE scan.")
-            _log(verbose, "  tip: install it for deeper coverage (e.g., choco install osv-scanner, scoop install osv-scanner, or see https://github.com/google/osv-scanner)")
-        else:
+        if exe:
             _log(verbose, "• Running OSV-Scanner…")
             vulns = _osv_scan(root)
             sev = _sev_counts(vulns)
-            _log(verbose, f"  ← OSV complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})")
+            _log(verbose, f"  ← OSV (CLI) complete: {len(vulns)} vulns "
+                          f"(C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})")
+        else:
+            _log(verbose, "• OSV-Scanner not found on PATH — running manual OSV API scan instead.")
+            _log(verbose, "  tip: install OSV-Scanner for deeper coverage (https://github.com/google/osv-scanner)")
+            vulns = _osv_api_scan(root, verbose=verbose)
+            sev = _sev_counts(vulns)
+            _log(verbose, f"  ← OSV (API) complete: {len(vulns)} vulns "
+                          f"(C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})")
     else:
-        _log(verbose, "• Skipping OSV-Scanner (disabled)")
+        _log(verbose, "• Skipping OSV dependency scan (disabled)")
+
 
 
     # 2) Secrets + risky patterns
