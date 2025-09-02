@@ -252,7 +252,7 @@ def _npm_semver_exact(spec: str) -> Optional[str]:
 
 
 # ---------- scanners: dependency vulns via OSV-Scanner (optional) ----------
-def _osv_scan(root: Path) -> List[Vuln]:
+def _osv_scan(root: Path, verbose: bool = False) -> List[Vuln]:
     exe = _which("osv-scanner")
     if not exe:
         return []
@@ -466,9 +466,48 @@ def _get_ward_advisor():
     except Exception:
         return None
 
+def _crewai_out_to_text(out) -> str:
+    """
+    CrewAI may return a string, or an object with one of several fields.
+    This grabs the first non-empty string we can find.
+    """
+    if out is None:
+        return ""
+    # direct string
+    if isinstance(out, str):
+        return out.strip()
 
-def _llm_recommendations_with(advisor, vulns: List[Vuln], secrets: List[SecretHit], issues: List[Issue]) -> str:
-    # If nothing was found, don't invoke the LLM; provide concise hygiene guidance.
+    # common attributes seen across versions
+    for attr in ("output", "final_output", "raw_output", "result", "value", "content", "text"):
+        val = getattr(out, attr, None)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+
+    # dict-like
+    if isinstance(out, dict):
+        for k in ("output", "final_output", "raw_output", "result", "value", "content", "text"):
+            v = out.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+    # pydantic / custom objects: scan __dict__ for first string field
+    d = getattr(out, "__dict__", None)
+    if isinstance(d, dict):
+        for v in d.values():
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+
+    # fallback to repr
+    return (repr(out) or "").strip()
+
+def _llm_recommendations_with(
+    advisor,
+    vulns: List[Vuln],
+    secrets: List[SecretHit],
+    issues: List[Issue],
+    verbose: bool = False
+) -> str:
+    # If nothing was found, return short hygiene text.
     if not (vulns or secrets or issues):
         return (
             "No dependency vulnerabilities, secrets, or risky patterns were detected in this scan.\n\n"
@@ -479,6 +518,8 @@ def _llm_recommendations_with(advisor, vulns: List[Vuln], secrets: List[SecretHi
         )
 
     if advisor is None:
+        if verbose:
+            _log(True, "  ! LLM advisor is None (crewai import/Agent creation failed).")
         return ""
 
     try:
@@ -488,7 +529,9 @@ def _llm_recommendations_with(advisor, vulns: List[Vuln], secrets: List[SecretHi
             order = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
             vs = sorted(vs, key=lambda x: (-order.get(x.severity, 0), x.ecosystem, x.package))
             return [
-                {"id": v.id, "sev": v.severity, "pkg": f"{v.ecosystem}:{v.package}@{v.version}", "sum": v.summary[:140]}
+                {"id": v.id, "sev": v.severity,
+                 "pkg": f"{v.ecosystem}:{v.package}@{v.version}",
+                 "sum": (v.summary or "")[:140]}
                 for v in vs[:n]
             ]
 
@@ -507,11 +550,26 @@ def _llm_recommendations_with(advisor, vulns: List[Vuln], secrets: List[SecretHi
             "Be specific and concise. Avoid boilerplate. Prefer code-level suggestions.\n\n"
             f"Findings JSON:\n{json.dumps(payload, indent=2)}"
         )
-        task = Task(description=prompt, expected_output="Markdown with the specified sections.")
+
+        # Build the task; some CrewAI versions accept 'agent=advisor'.
+        try:
+            task = Task(description=prompt, expected_output="Markdown with the specified sections.", agent=advisor)
+        except TypeError:
+            # Older signatures don't accept 'agent'; that's fine.
+            task = Task(description=prompt, expected_output="Markdown with the specified sections.")
+
         out = advisor.execute_task(task)
-        return str(out).strip()
-    except Exception:
+
+        text = _crewai_out_to_text(out)
+        if verbose:
+            _log(True, f"  … LLM returned type={type(out).__name__}, extracted chars={len(text)}")
+
+        return text
+    except Exception as e:
+        if verbose:
+            _log(True, f"  ! LLM error: {e.__class__.__name__}: {e}")
         return ""
+
 
 
 
@@ -522,6 +580,12 @@ def _sev_counts(vulns: List[Vuln]) -> Dict[str, int]:
         c[v.severity] = c.get(v.severity, 0) + 1
     return c
 
+def _vuln_details_url(vuln_id: str) -> str:
+    if not vuln_id:
+        return ""
+    if vuln_id.startswith("GHSA-"):
+        return f"https://github.com/advisories/{vuln_id}"
+    return f"https://osv.dev/vulnerability/{vuln_id}"
 
 def render_ward_markdown(
     title: str,
@@ -530,20 +594,49 @@ def render_ward_markdown(
     secrets: List[SecretHit],
     issues: List[Issue],
     recommendations_md: str = "",
+    method_tag: str = "",
 ) -> str:
     sev = _sev_counts(vulns)
     lines: List[str] = []
+     # --- header -------
     lines.append(f"# {title}\n")
     lines.append(f"_Root_: `{root.name}`  ")
-    lines.append(f"Findings: **{len(vulns)} vulns** (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']}), "
-                 f"**{len(secrets)} secrets**, **{len(issues)} risky patterns**\n")
+    if method_tag:
+        lines.append(f"_Scan method_: **{method_tag}**  ")
+    lines.append(
+        "Findings: **{t} vulns** (C:{c} H:{h} M:{m} L:{l} U:{u}), **{S} secrets**, **{I} risky patterns**\n"
+        .format(
+            t=len(vulns), c=sev["CRITICAL"], h=sev["HIGH"], m=sev["MEDIUM"], l=sev["LOW"], u=sev["UNKNOWN"],
+            S=len(secrets), I=len(issues)
+        )
+    )
+    if vulns:
+        from collections import defaultdict
+        buckets = defaultdict(list)  # key: (ecosystem, package, version)
+        for v in vulns:
+            key = (v.ecosystem or "?", v.package or "?", v.version or "?")
+            buckets[key].append(v)
+
+        lines.append("## Vulnerabilities by Package")
+        # sort: most advisories first, then ecosystem/package for stable order
+        for (eco, pkg, ver), items in sorted(
+            buckets.items(),
+            key=lambda kv: (-len(kv[1]), kv[0][0], kv[0][1])
+        ):
+            ids = sorted({x.id for x in items if x.id})
+            preview = ", ".join(ids[:8])
+            more = f" …(+{len(ids)-8} more IDs)" if len(ids) > 8 else ""
+            lines.append(f"- `{eco}:{pkg}@{ver}` — **{len(items)} advisories** (e.g., {preview}{more})")
+        lines.append("")
 
     if vulns:
         lines.append("## Top Vulnerabilities")
         weight = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
         for v in sorted(vulns, key=lambda x: (-weight.get(x.severity, 0), x.ecosystem, x.package))[:12]:
             pkg = f"{v.ecosystem}:{v.package}@{v.version}" if v.package else v.ecosystem
-            lines.append(f"- `{v.id}` **{v.severity}** — {pkg} — {v.summary[:140]}")
+            url = _vuln_details_url(v.id)
+            desc = (v.summary or "").strip() or "(see details)"
+            lines.append(f"- `{v.id}` **{v.severity}** — {pkg} — {desc} — [details]({url})")
         lines.append("")
 
     if secrets:
@@ -560,8 +653,9 @@ def render_ward_markdown(
 
     if recommendations_md:
         lines.append("## Recommendations\n")
-        lines.append(recommendations_md.strip())
+        lines.append((recommendations_md or "_(LLM returned no text.)_").strip())
         lines.append("")
+
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -597,30 +691,30 @@ def run_ward(
     root = Path(path).resolve()
     _log(verbose, f"▶ Ward scanning root: {root}")
 
+    # 0) Discover files for text scanning
     files = walk_files(root, include or [], exclude or [], [e.lower() for e in (exts or [])] or None, max_files)
     _log(verbose, f"• Files discovered: {len(files)}")
 
     # 1) Dependency vulnerabilities (OSV CLI or API fallback)
+    method_tag = "OSV disabled"
     vulns: List[Vuln] = []
     if use_osv:
         exe = _which("osv-scanner")
         if exe:
+            method_tag = "OSV CLI"
             _log(verbose, "• Running OSV-Scanner…")
-            vulns = _osv_scan(root)
+            vulns = _osv_scan(root, verbose=verbose)
             sev = _sev_counts(vulns)
-            _log(verbose, f"  ← OSV (CLI) complete: {len(vulns)} vulns "
-                          f"(C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})")
+            _log(verbose, f"  ← OSV (CLI) complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})")
         else:
+            method_tag = "OSV API"
             _log(verbose, "• OSV-Scanner not found on PATH — running manual OSV API scan instead.")
             _log(verbose, "  tip: install OSV-Scanner for deeper coverage (https://github.com/google/osv-scanner)")
             vulns = _osv_api_scan(root, verbose=verbose)
             sev = _sev_counts(vulns)
-            _log(verbose, f"  ← OSV (API) complete: {len(vulns)} vulns "
-                          f"(C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})")
+            _log(verbose, f"  ← OSV (API) complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})")
     else:
-        _log(verbose, "• Skipping OSV dependency scan (disabled)")
-
-
+        _log(verbose, "• Skipping OSV-Scanner (disabled)")
 
     # 2) Secrets + risky patterns
     _log(verbose, "• Scanning for secrets and risky patterns…")
@@ -637,24 +731,67 @@ def run_ward(
                 EnvUtils.load_env_for_tool()
         except Exception:
             pass
-        with _llm_profile("WARD"):
+        with _llm_profile("WARD"):  
             advisor = _get_ward_advisor()
+            recommendations_md = _llm_recommendations_with(advisor, vulns, secrets, issues, verbose=verbose)
+
+            def _crewai_out_to_text(out) -> str:
+                """Normalize CrewAI outputs across versions/shapes into a plain string."""
+                if out is None:
+                    return ""
+
+                # direct string
+                if isinstance(out, str):
+                    return out.strip()
+
+                # common attributes across CrewAI versions
+                for attr in ("output", "final_output", "raw_output", "result", "value", "content", "text"):
+                    val = getattr(out, attr, None)
+                    if isinstance(val, str) and val.strip():
+                        return val.strip()
+
+                # mapping-like
+                if isinstance(out, dict):
+                    for k in ("output", "final_output", "raw_output", "result", "value", "content", "text"):
+                        v = out.get(k)
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+
+                # pydantic/custom objects: scan __dict__
+                d = getattr(out, "__dict__", None)
+                if isinstance(d, dict):
+                    for v in d.values():
+                        if isinstance(v, str) and v.strip():
+                            return v.strip()
+
+                # last resort
+                return (repr(out) or "").strip()
+
             recommendations_md = _llm_recommendations_with(advisor, vulns, secrets, issues)
-        _log(verbose, "  ← LLM step complete")
+        _log(verbose, f"  ← LLM step complete (chars: {len(recommendations_md)})")
     else:
         _log(verbose, "• Skipping LLM recommendations (disabled)")
 
-    # 4) Render & write (topic = repo root, just like Unveil)
+    # 4) Render & write (topic = repo root)
     _log(verbose, "• Rendering Ward report…")
     from geist_agent.utils import ReportUtils  # local import to avoid cycles
     out_dir = PathUtils.ensure_reports_dir("ward_reports")
     topic = root.name or "unknown_root"
-    md_name = ReportUtils.generate_filename(topic)  # mirror Unveil naming
+    md_name = ReportUtils.generate_filename(topic)  
     out_md = out_dir / md_name
 
-    md = render_ward_markdown("Ward: Security Audit", root, vulns, secrets, issues, recommendations_md=recommendations_md)
+    md = render_ward_markdown(
+        "Ward: Security Audit",
+        root,
+        vulns,
+        secrets,
+        issues,
+        recommendations_md=recommendations_md,  # includes the LLM output
+        method_tag=method_tag                    # shows OSV CLI vs API in header
+    )
     out_md.write_text(md, encoding="utf-8")
     _log(verbose, f"✓ Markdown written: {out_md}")
+
 
     if write_json:
         out_json = save_ward_json(root, vulns, secrets, issues)
