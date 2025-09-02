@@ -363,7 +363,8 @@ def _osv_scan(root: Path, verbose: bool = False) -> List[Vuln]:
 def _osv_api_scan(root: Path, verbose: bool = True) -> List[Vuln]:
     """
     Manual OSV check using https://api.osv.dev/v1/querybatch
-    Builds queries from pinned dependency manifests discovered in the repo.
+    Scales to large projects by batching, adaptive batch shrinking on HTTP 400,
+    and exponential backoff on 429/5xx. Aggregates results across all batches.
     """
     _log(verbose, "• Collecting pinned dependencies for OSV API…")
     deps = _collect_pinned_deps_for_osv(root)
@@ -371,46 +372,129 @@ def _osv_api_scan(root: Path, verbose: bool = True) -> List[Vuln]:
         _log(verbose, "  ← No pinned deps found to query; skipping OSV API.")
         return []
 
-    payload = {
-        "queries": [
-            {"package": {"name": d["name"], "ecosystem": d["ecosystem"]}, "version": d["version"]} for d in deps
-        ]
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url="https://api.osv.dev/v1/querybatch",
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    # Config knobs (override via env as needed)
+    HARD_CAP   = int(os.getenv("WARD_OSV_MAX_QUERIES", "0"))      # 0 = no cap
+    BATCH      = int(os.getenv("WARD_OSV_BATCH_SIZE", "200"))      # starting batch size
+    MIN_BATCH  = int(os.getenv("WARD_OSV_MIN_BATCH_SIZE", "25"))   # shrink to this floor on 400s
+    TIMEOUT_S  = int(os.getenv("WARD_OSV_HTTP_TIMEOUT", "60"))     # per HTTP call
+    MAX_RETRY  = int(os.getenv("WARD_OSV_MAX_RETRY", "5"))         # per batch
+    BO_START   = float(os.getenv("WARD_OSV_BACKOFF_START", "1.0")) # seconds
+    BO_MAX     = float(os.getenv("WARD_OSV_BACKOFF_MAX", "30.0"))  # seconds
 
-    _log(verbose, f"• Contacting OSV API with {len(deps)} queries…")
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            raw = resp.read().decode("utf-8")
-            obj = json.loads(raw)
-    except urllib.error.URLError as e:
-        _log(verbose, f"  ! OSV API network error: {e}")
-        return []
-    except Exception as e:
-        _log(verbose, f"  ! OSV API error: {e}")
-        return []
+    # De-dupe defensively
+    uniq: List[Dict[str, str]] = []
+    seen = set()
+    for d in deps:
+        key = (d["ecosystem"], d["name"], d["version"])
+        if key not in seen:
+            seen.add(key)
+            uniq.append(d)
+
+    if HARD_CAP > 0 and len(uniq) > HARD_CAP:
+        _log(verbose, f"• OSV API: capping queries {len(uniq)} → {HARD_CAP} (WARD_OSV_MAX_QUERIES)")
+        uniq = uniq[:HARD_CAP]
+
+    total = len(uniq)
+    _log(verbose, f"• Contacting OSV API with {total} queries (batch start={BATCH})…")
+
+    # Prebuild all query objects
+    all_queries = [
+        {"package": {"name": d["name"], "ecosystem": d["ecosystem"]}, "version": d["version"]}
+        for d in uniq
+    ]
 
     findings: List[Vuln] = []
-    for d, res in zip(deps, obj.get("results", [])):
-        vulns = res.get("vulns") or []
-        for v in vulns:
-            findings.append(Vuln(
-                id=v.get("id", "") or "",
-                ecosystem=d["ecosystem"],
-                package=d["name"],
-                version=d["version"],
-                severity=_max_sev_from_list(v.get("severity", []) or []),
-                summary=(v.get("summary") or v.get("details", "")[:140]) or "",
-            ))
+    i = 0
+    curr_batch = max(BATCH, MIN_BATCH)
+
+    while i < total:
+        # Prepare batch
+        end = min(i + curr_batch, total)
+        chunk = all_queries[i:end]
+        dep_slice = uniq[i:end]
+
+        retries = 0
+        backoff = BO_START
+
+        while True:
+            payload = {"queries": chunk}
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                url="https://api.osv.dev/v1/querybatch",
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+                    raw = resp.read().decode("utf-8", "replace")
+                    obj = json.loads(raw)
+
+                # Success — harvest results, advance window, reset batch size gently upward
+                for d, res in zip(dep_slice, obj.get("results", [])):
+                    for v in res.get("vulns") or []:
+                        findings.append(Vuln(
+                            id=v.get("id", "") or "",
+                            ecosystem=d["ecosystem"],
+                            package=d["name"],
+                            version=d["version"],
+                            severity=_max_sev_from_list(v.get("severity", []) or []),
+                            summary=(v.get("summary") or v.get("details", "")[:140]) or "",
+                        ))
+                if verbose and (end == total or (end - i) >= curr_batch):
+                    _log(True, f"  ← batch {i//curr_batch + 1}: {end}/{total}")
+
+                i = end
+                # Be polite and avoid hammering
+                time.sleep(0.05)
+                break
+
+            except urllib.error.HTTPError as e:
+                code = getattr(e, "code", None)
+                if code in (429, 500, 502, 503, 504) and retries < MAX_RETRY:
+                    # Exponential backoff, retry same chunk
+                    if verbose:
+                        _log(True, f"  ! HTTP {code}; retry {retries+1}/{MAX_RETRY} in {backoff:.1f}s")
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2.0, BO_MAX)
+                    retries += 1
+                    continue
+
+                if code == 400 and len(chunk) > MIN_BATCH:
+                    # Payload too large / malformed — shrink batch and retry immediately
+                    new_size = max(MIN_BATCH, len(chunk) // 2)
+                    if verbose:
+                        _log(True, f"  ! HTTP 400; shrinking batch {len(chunk)} → {new_size} and retrying")
+                    curr_batch = new_size
+                    end = min(i + curr_batch, total)
+                    chunk = all_queries[i:end]
+                    dep_slice = uniq[i:end]
+                    retries = 0
+                    backoff = BO_START
+                    continue
+
+                # Give up on this chunk; log and skip forward to make progress
+                if verbose:
+                    _log(True, f"  ! OSV API error (HTTP {code}); skipping {len(chunk)} queries")
+                i = end
+                break
+
+            except urllib.error.URLError as e:
+                if retries < MAX_RETRY:
+                    if verbose:
+                        _log(True, f"  ! Network error; retry {retries+1}/{MAX_RETRY} in {backoff:.1f}s: {e}")
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2.0, BO_MAX)
+                    retries += 1
+                    continue
+                if verbose:
+                    _log(True, f"  ! OSV API network error; skipping {len(chunk)} queries: {e}")
+                i = end
+                break
 
     _log(verbose, f"  ← OSV API complete: {len(findings)} vulns")
     return findings
+
 
 def _enrich_vulns_with_details(vulns: List[Vuln], *, limit: Optional[int] = None, verbose: bool = False) -> None:
     """
