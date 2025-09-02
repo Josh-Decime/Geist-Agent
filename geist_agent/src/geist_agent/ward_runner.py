@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 from contextlib import contextmanager
 import urllib.request
 import urllib.error
+from collections import defaultdict
 
 from geist_agent.utils import PathUtils
 from geist_agent.unveil_tools import walk_files  
@@ -49,6 +50,19 @@ class Issue:
     line: int
     rule: str
     snippet: str  # code context (non-secret), truncated
+
+# ---------- severity helpers (shared) ----------
+SEV_ORDER = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
+def _sev_sort_key(v: Vuln):
+    return (-SEV_ORDER.get(v.severity, 0), v.ecosystem, v.package)
+
+def _max_sev_from_list(sev_list: List[dict]) -> str:
+    txt = json.dumps(sev_list).upper()
+    if "CRITICAL" in txt: return "CRITICAL"
+    if "HIGH" in txt:     return "HIGH"
+    if "MEDIUM" in txt:   return "MEDIUM"
+    if "LOW" in txt:      return "LOW"
+    return "UNKNOWN"
 
 
 # ---------- helpers: exec/which ----------
@@ -275,14 +289,6 @@ def _osv_scan(root: Path, verbose: bool = False) -> List[Vuln]:
 
     vulns: List[Vuln] = []
 
-    def _max_sev(sev_list: List[dict]) -> str:
-        txt = json.dumps(sev_list).upper()
-        if "CRITICAL" in txt: return "CRITICAL"
-        if "HIGH" in txt:     return "HIGH"
-        if "MEDIUM" in txt:   return "MEDIUM"
-        if "LOW" in txt:      return "LOW"
-        return "UNKNOWN"
-
     for r in data.get("results", []):
         for p in r.get("packages", []):
             pkg = p.get("package", {}) or {}
@@ -291,7 +297,7 @@ def _osv_scan(root: Path, verbose: bool = False) -> List[Vuln]:
             versions = p.get("versions", []) or []
             vers = next((v for v in versions if v), "") or (versions[-1] if versions else "")
             for v in p.get("vulnerabilities", []) or []:
-                sev = _max_sev(v.get("severity", []) or [])
+                sev = _max_sev_from_list(v.get("severity", []) or [])
                 summary = v.get("summary") or v.get("details", "")[:140]
                 vulns.append(Vuln(
                     id=v.get("id", "") or "",
@@ -340,14 +346,6 @@ def _osv_api_scan(root: Path, verbose: bool = True) -> List[Vuln]:
         _log(verbose, f"  ! OSV API error: {e}")
         return []
 
-    def _max_sev(sev_list: List[dict]) -> str:
-        txt = json.dumps(sev_list).upper()
-        if "CRITICAL" in txt: return "CRITICAL"
-        if "HIGH" in txt:     return "HIGH"
-        if "MEDIUM" in txt:   return "MEDIUM"
-        if "LOW" in txt:      return "LOW"
-        return "UNKNOWN"
-
     findings: List[Vuln] = []
     for d, res in zip(deps, obj.get("results", [])):
         vulns = res.get("vulns") or []
@@ -357,7 +355,7 @@ def _osv_api_scan(root: Path, verbose: bool = True) -> List[Vuln]:
                 ecosystem=d["ecosystem"],
                 package=d["name"],
                 version=d["version"],
-                severity=_max_sev(v.get("severity", []) or []),
+                severity=_max_sev_from_list(v.get("severity", []) or []),
                 summary=(v.get("summary") or v.get("details", "")[:140]) or "",
             ))
 
@@ -386,6 +384,10 @@ _INSECURE_PATTERNS: List[Tuple[str, str]] = [
     ("Wildcard CORS", r"Access-Control-Allow-Origin['\"]?\s*[:=]\s*['\"]\*['\"]"),
     ("Debug true", r"\bDEBUG\s*=\s*True\b|\bprocess\.env\.NODE_ENV\s*!==\s*['\"]production['\"]"),
 ]
+
+# Pre-compile regexes (same behavior, faster)
+_SECRET_REGEXES: List[Tuple[str, re.Pattern]] = [(k, re.compile(rx)) for k, rx in _SECRET_PATTERNS]
+_INSECURE_REGEXES: List[Tuple[str, re.Pattern]] = [(k, re.compile(rx)) for k, rx in _INSECURE_PATTERNS]
 
 
 def _read_lines(path: Path) -> List[str]:
@@ -420,8 +422,8 @@ def scan_secrets_and_issues(
         for i, line in enumerate(lines, 1):
             sline = line.strip()
 
-            for kind, rx in _SECRET_PATTERNS:
-                m = re.search(rx, sline)
+            for kind, rx in _SECRET_REGEXES:
+                m = rx.search(sline)
                 if m:
                     snippet = "<redacted>"
                     if not redact:
@@ -430,8 +432,8 @@ def scan_secrets_and_issues(
                         snippet = _masked_preview(sline, m.start(), m.end(), keep=3)
                     hits.append(SecretHit(path=rel, line=i, kind=kind, snippet=snippet))
 
-            for rule, rx in _INSECURE_PATTERNS:
-                m = re.search(rx, sline)
+            for rule, rx in _INSECURE_REGEXES:
+                m = rx.search(sline)
                 if m:
                     start = max(0, m.start() - 8)
                     end   = min(len(sline), m.end() + 8)
@@ -460,7 +462,7 @@ def _get_ward_advisor():
             verbose=False,
             max_iter=1,
             cache=True,
-            max_execution_time=60,
+            max_execution_time=300,
             respect_context_window=True,
         )
     except Exception:
@@ -526,14 +528,12 @@ def _llm_recommendations_with(
         from crewai import Task
 
         def _shorten(vs: List[Vuln], n: int = 50):
-            order = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
-            vs = sorted(vs, key=lambda x: (-order.get(x.severity, 0), x.ecosystem, x.package))
+            vs = sorted(vs, key=_sev_sort_key)
             return [
-                {"id": v.id, "sev": v.severity,
-                 "pkg": f"{v.ecosystem}:{v.package}@{v.version}",
-                 "sum": (v.summary or "")[:140]}
+                {"id": v.id, "sev": v.severity, "pkg": f"{v.ecosystem}:{v.package}@{v.version}", "sum": (v.summary or "")[:140]}
                 for v in vs[:n]
             ]
+
 
         payload = {
             "vulns": _shorten(vulns),
@@ -558,7 +558,9 @@ def _llm_recommendations_with(
             # Older signatures don't accept 'agent'; that's fine.
             task = Task(description=prompt, expected_output="Markdown with the specified sections.")
 
+        _log(verbose, "  … calling ward advisor")
         out = advisor.execute_task(task)
+        _log(verbose, "  … ward advisor returned")
 
         text = _crewai_out_to_text(out)
         if verbose:
@@ -611,7 +613,6 @@ def render_ward_markdown(
         )
     )
     if vulns:
-        from collections import defaultdict
         buckets = defaultdict(list)  # key: (ecosystem, package, version)
         for v in vulns:
             key = (v.ecosystem or "?", v.package or "?", v.version or "?")
@@ -631,13 +632,13 @@ def render_ward_markdown(
 
     if vulns:
         lines.append("## Top Vulnerabilities")
-        weight = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "UNKNOWN": 0}
-        for v in sorted(vulns, key=lambda x: (-weight.get(x.severity, 0), x.ecosystem, x.package))[:12]:
+        for v in sorted(vulns, key=_sev_sort_key)[:12]:
             pkg = f"{v.ecosystem}:{v.package}@{v.version}" if v.package else v.ecosystem
-            url = _vuln_details_url(v.id)
             desc = (v.summary or "").strip() or "(see details)"
+            url = _vuln_details_url(v.id)
             lines.append(f"- `{v.id}` **{v.severity}** — {pkg} — {desc} — [details]({url})")
         lines.append("")
+
 
     if secrets:
         lines.append("## Secrets (first 12)")
@@ -705,14 +706,14 @@ def run_ward(
             _log(verbose, "• Running OSV-Scanner…")
             vulns = _osv_scan(root, verbose=verbose)
             sev = _sev_counts(vulns)
-            _log(verbose, f"  ← OSV (CLI) complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})")
+            _log(verbose, f"  ← OSV (CLI) complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']} U:{sev['UNKNOWN']})")
         else:
             method_tag = "OSV API"
             _log(verbose, "• OSV-Scanner not found on PATH — running manual OSV API scan instead.")
             _log(verbose, "  tip: install OSV-Scanner for deeper coverage (https://github.com/google/osv-scanner)")
             vulns = _osv_api_scan(root, verbose=verbose)
             sev = _sev_counts(vulns)
-            _log(verbose, f"  ← OSV (API) complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']})")
+            _log(verbose, f"  ← OSV (API) complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']} U:{sev['UNKNOWN']})")
     else:
         _log(verbose, "• Skipping OSV-Scanner (disabled)")
 
@@ -733,41 +734,10 @@ def run_ward(
             pass
         with _llm_profile("WARD"):  
             advisor = _get_ward_advisor()
-            recommendations_md = _llm_recommendations_with(advisor, vulns, secrets, issues, verbose=verbose)
-
-            def _crewai_out_to_text(out) -> str:
-                """Normalize CrewAI outputs across versions/shapes into a plain string."""
-                if out is None:
-                    return ""
-
-                # direct string
-                if isinstance(out, str):
-                    return out.strip()
-
-                # common attributes across CrewAI versions
-                for attr in ("output", "final_output", "raw_output", "result", "value", "content", "text"):
-                    val = getattr(out, attr, None)
-                    if isinstance(val, str) and val.strip():
-                        return val.strip()
-
-                # mapping-like
-                if isinstance(out, dict):
-                    for k in ("output", "final_output", "raw_output", "result", "value", "content", "text"):
-                        v = out.get(k)
-                        if isinstance(v, str) and v.strip():
-                            return v.strip()
-
-                # pydantic/custom objects: scan __dict__
-                d = getattr(out, "__dict__", None)
-                if isinstance(d, dict):
-                    for v in d.values():
-                        if isinstance(v, str) and v.strip():
-                            return v.strip()
-
-                # last resort
-                return (repr(out) or "").strip()
-
-            recommendations_md = _llm_recommendations_with(advisor, vulns, secrets, issues)
+            if advisor is None:
+                _log(verbose, "  ! ward advisor not available; skipping LLM recommendations.")
+            else:
+                recommendations_md = _llm_recommendations_with(advisor, vulns, secrets, issues, verbose=verbose)
         _log(verbose, f"  ← LLM step complete (chars: {len(recommendations_md)})")
     else:
         _log(verbose, "• Skipping LLM recommendations (disabled)")
