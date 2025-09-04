@@ -10,7 +10,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from contextlib import contextmanager
 import urllib.request
 import urllib.error
@@ -24,6 +24,27 @@ from geist_agent.unveil_tools import walk_files
 def _log(enabled: bool, msg: str):
     if enabled:
         print(msg, file=sys.stderr, flush=True)
+
+# --- scan metadata for the report header ---
+SCAN_META: Dict[str, Any] = {
+    "source": "",            # "CLI" or "API"
+    "lockfiles": 0,          # count of lockfiles seen by CLI path
+    "lockfile_paths": [],    # first few lockfile paths (for display)
+    "manifests": 0,          
+    "manifest_paths": [],     
+    "api_queries": 0,        # number of OSV API queries we sent
+    "pinned_deps": 0,        # number of pinned deps (same as api_queries)
+}
+def _reset_scan_meta():
+    SCAN_META["source"] = ""
+    SCAN_META["lockfiles"] = 0
+    SCAN_META["lockfile_paths"] = []
+    SCAN_META["manifests"] = 0          # NEW
+    SCAN_META["manifest_paths"] = []    # NEW
+    SCAN_META["api_queries"] = 0
+    SCAN_META["pinned_deps"] = 0
+
+
 
 
 # ---------- data types ----------
@@ -322,6 +343,27 @@ def _osv_scan(root: Path, verbose: bool = False) -> List[Vuln]:
         return []
 
     manifests = _collect_manifests(root)
+
+    # Track everything we found
+    SCAN_META["manifests"] = len(manifests)
+    SCAN_META["manifest_paths"] = manifests[:3]
+
+    # True lockfiles only
+    _lockfile_names = {
+        "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+        "poetry.lock", "Pipfile.lock",
+        "go.sum",
+        "Cargo.lock",
+        "Gemfile.lock",
+        "composer.lock",
+        "packages.lock.json",
+    }
+    lockfile_paths = [p for p in manifests if Path(p).name in _lockfile_names]
+
+    SCAN_META["source"] = "CLI"
+    SCAN_META["lockfiles"] = len(lockfile_paths)
+    SCAN_META["lockfile_paths"] = lockfile_paths[:3]
+
     if manifests:
         cmd = [exe, "--format=json", "--skip-git", *sum([["-L", m] for m in manifests], [])]
     else:
@@ -368,6 +410,11 @@ def _osv_api_scan(root: Path, verbose: bool = True) -> List[Vuln]:
     """
     _log(verbose, "• Collecting pinned dependencies for OSV API…")
     deps = _collect_pinned_deps_for_osv(root)
+
+    SCAN_META["source"] = "API"
+    SCAN_META["pinned_deps"] = len(deps)
+    SCAN_META["api_queries"] = len(deps)
+
     if not deps:
         _log(verbose, "  ← No pinned deps found to query; skipping OSV API.")
         return []
@@ -837,6 +884,23 @@ def _vuln_details_url(vuln_id: str) -> str:
         return f"https://github.com/advisories/{vuln_id}"
     return f"https://osv.dev/vulnerability/{vuln_id}"
 
+def _format_scan_input(meta: Dict[str, Any]) -> str:
+    src = meta.get("source") or "?"
+    if src == "CLI":
+        k = meta.get("lockfiles", 0)
+        m = meta.get("manifests", 0)
+        lf_names = [Path(p).name for p in (meta.get("lockfile_paths") or [])]
+        mf_names = [Path(p).name for p in (meta.get("manifest_paths") or [])]
+        lf_tail = f" ({', '.join(lf_names)}{('…' if k > len(lf_names) else '')})" if lf_names else ""
+        mf_tail = f" ({', '.join(mf_names)}{('…' if m > len(mf_names) else '')})" if mf_names else ""
+        return f"_Input_: **OSV CLI** — lockfiles: **{k}**{lf_tail}; manifests: **{m}**{mf_tail}  "
+    elif src == "API":
+        q = meta.get("api_queries", 0)
+        return f"_Input_: **OSV API** — pinned dependency queries: **{q}**  "
+    return "_Input_: (unknown)  "
+
+
+
 def render_ward_markdown(
     title: str,
     root: Path,
@@ -845,6 +909,7 @@ def render_ward_markdown(
     issues: List[Issue],
     recommendations_md: str = "",
     method_tag: str = "",
+    scan_meta: Optional[Dict[str, Any]] = None,
 ) -> str:
     sev = _sev_counts(vulns)
     lines: List[str] = []
@@ -860,6 +925,10 @@ def render_ward_markdown(
             S=len(secrets), I=len(issues)
         )
     )
+    if scan_meta:
+        lines.append(_format_scan_input(scan_meta))
+        lines.append("")
+
     # Summary (code-built, not LLM)
     lines.append("## Summary")
     lines.append(_build_vulnerability_summary_md(vulns))
@@ -962,9 +1031,11 @@ def run_ward(
     redact: bool = True,
     preview: bool = False,
     llm: bool = True,        # LLM ON by default
-    write_json: bool = False # JSON is OFF by default; enable with --json
+    write_json: bool = False, # JSON is OFF by default; enable with --json
+    force_api: bool = False, 
 ) -> Path:
     root = Path(path).resolve()
+    _reset_scan_meta()
     _log(verbose, f"▶ Ward scanning root: {root}")
 
     # 0) Discover files for text scanning
@@ -976,21 +1047,47 @@ def run_ward(
     vulns: List[Vuln] = []
     if use_osv:
         exe = _which("osv-scanner")
-        if exe:
+        if exe and not force_api:
             method_tag = "OSV CLI"
             _log(verbose, "• Running OSV-Scanner…")
             vulns = _osv_scan(root, verbose=verbose)
             sev = _sev_counts(vulns)
             _log(verbose, f"  ← OSV (CLI) complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']} U:{sev['UNKNOWN']})")
+            _log(verbose, "  " + _format_scan_input(SCAN_META))
+            
         else:
-            method_tag = "OSV API"
-            _log(verbose, "• OSV-Scanner not found on PATH — running manual OSV API scan instead.")
-            _log(verbose, "  tip: install OSV-Scanner for deeper coverage (https://github.com/google/osv-scanner)")
+            method_tag = "OSV API (forced)" if (force_api and exe) else "OSV API"
+            if force_api and exe:
+                _log(verbose, "• OSV-Scanner present but --no-osv/force_api set — using OSV API instead.")
+            else:
+                _log(verbose, "• OSV-Scanner not found on PATH — running manual OSV API scan instead.")
+                _log(verbose, "  tip: install OSV-Scanner for deeper coverage (https://github.com/google/osv-scanner)")
             vulns = _osv_api_scan(root, verbose=verbose)
             sev = _sev_counts(vulns)
             _log(verbose, f"  ← OSV (API) complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']} U:{sev['UNKNOWN']})")
+            _log(verbose, "  " + _format_scan_input(SCAN_META))
+
+
+        # Auto-fallback to OSV API when CLI has nothing useful to scan
+        if method_tag == "OSV CLI" and SCAN_META["lockfiles"] == 0 and SCAN_META["manifests"] == 0 and not vulns:
+            _log(verbose, "• No lockfiles or manifests for OSV CLI — falling back to OSV API pinned-deps scan…")
+            method_tag = "OSV API (fallback)"
+            v2 = _osv_api_scan(root, verbose=verbose)
+            if v2:
+                vulns = v2
+                sev = _sev_counts(vulns)
+                _log(verbose, f"  ← OSV (API fallback) complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']} U:{sev['UNKNOWN']})")
+            _log(verbose, "  " + _format_scan_input(SCAN_META))
+
     else:
-        _log(verbose, "• Skipping OSV-Scanner (disabled)")
+        # --no-osv means "don't use the CLI"; always run the OSV API scan
+        method_tag = "OSV API (forced)" if force_api else "OSV API"
+        _log(verbose, "• OSV CLI disabled — using OSV API scan.")
+        vulns = _osv_api_scan(root, verbose=verbose)
+        sev = _sev_counts(vulns)
+        _log(verbose, f"  ← OSV (API) complete: {len(vulns)} vulns (C:{sev['CRITICAL']} H:{sev['HIGH']} M:{sev['MEDIUM']} L:{sev['LOW']} U:{sev['UNKNOWN']})")
+        _log(verbose, "  " + _format_scan_input(SCAN_META))
+
 
     # 1b) Enrich severity/summary from OSV per-ID endpoint (fills UNKNOWN / empty)
     if vulns:
@@ -1040,7 +1137,8 @@ def run_ward(
         secrets,
         issues,
         recommendations_md=recommendations_md,  # includes the LLM output
-        method_tag=method_tag                    # shows OSV CLI vs API in header
+        method_tag=method_tag,                   # shows OSV CLI vs API in header
+        scan_meta=SCAN_META,
     )
     out_md.write_text(md, encoding="utf-8")
     _log(verbose, f"✓ Markdown written: {out_md}")
@@ -1066,7 +1164,7 @@ def main():
     ap.add_argument("--ext", action="append", default=[], help="Allowed extensions (repeatable)")
     ap.add_argument("-q", "--quiet", action="store_true", help="Suppress progress logs")
 
-    ap.add_argument("--no-osv", action="store_true", help="Disable OSV dependency scan even if osv-scanner is present")
+    ap.add_argument("--no-osv", action="store_true", help="Force OSV API scan (skip the osv-scanner CLI even if installed)")
     ap.add_argument("--no-redact", action="store_true", help="Do NOT redact secrets in report (discouraged)")
     ap.add_argument("--preview", action="store_true", help="Show masked preview for secrets (first/last 3 chars)")
     ap.add_argument("--no-llm", action="store_true", help="Disable LLM recommendations (on by default)")
@@ -1084,6 +1182,7 @@ def main():
         redact=not args.no_redact,
         preview=bool(args.preview),
         llm=not args.no_llm,
+        force_api=args.no_osv,
     )
 
 
