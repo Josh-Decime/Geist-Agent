@@ -63,7 +63,7 @@ def unveil_cmd(
     max_files: int = typer.Option(800, "--max-files"),
 ):
     out = run_unveil(path, include, exclude, ext, max_files, title="Unveil: Codebase Map", verbose=True)
-    typer.secho(f"🗺  Unveil report written to:  {out}", fg="green")
+    typer.secho(f"Unveil report written to:  {out}", fg="green")
 
 
 # ---------- ward --------------
@@ -95,7 +95,7 @@ def ward_cmd(
         llm=not no_llm,         # ON by default
         write_json=json,        # OFF by default; enable with --json
     )
-    typer.secho(f"🛡  Ward report written to: {out}", fg="green")
+    typer.secho(f"Ward report written to: {out}", fg="green")
 
 
 # ---------- entry ----------

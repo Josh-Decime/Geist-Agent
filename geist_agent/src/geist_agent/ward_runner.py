@@ -1056,9 +1056,9 @@ def run_ward(
             _log(verbose, "  " + _format_scan_input(SCAN_META))
             
         else:
-            method_tag = "OSV API (forced)" if (force_api and exe) else "OSV API"
-            if force_api and exe:
-                _log(verbose, "• OSV-Scanner present but --no-osv/force_api set — using OSV API instead.")
+            method_tag = "OSV API"
+            if exe and force_api:
+                _log(verbose, "• OSV CLI present but disabled — using OSV API scan (forced).")
             else:
                 _log(verbose, "• OSV-Scanner not found on PATH — running manual OSV API scan instead.")
                 _log(verbose, "  tip: install OSV-Scanner for deeper coverage (https://github.com/google/osv-scanner)")
