@@ -1,4 +1,4 @@
-# src/geist_agent/ward/common.py
+﻿# src/geist_agent/ward/common.py
 from __future__ import annotations
 import os, sys, json, shutil, subprocess
 from dataclasses import dataclass
@@ -133,3 +133,4 @@ def _llm_profile(prefix: str):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+

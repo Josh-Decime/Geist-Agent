@@ -1,4 +1,4 @@
-# src/geist_agent/ward/scanning.py
+﻿# src/geist_agent/ward/scanning.py
 from __future__ import annotations
 import os, re, json, time, urllib.request, urllib.error
 from pathlib import Path
@@ -361,3 +361,4 @@ def scan_secrets_and_issues(
                     start = max(0, m.start() - 8); end = min(len(sline), m.end() + 8)
                     issues.append(Issue(path=rel, line=i, rule=rule, snippet=sline[start:end][:risky_context]))
     return hits, issues
+

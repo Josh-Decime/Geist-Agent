@@ -1,4 +1,4 @@
-# src/geist_agent/unveil_runner.py
+﻿# src/geist_agent/unveil/unveil_runner.py
 from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Dict
@@ -6,10 +6,11 @@ import json
 import sys
 import time
 from contextlib import contextmanager
+from geist_agent.utils import SCAN_EXTS_FAST, SCAN_EXTS_FULL, walk_files_compat as _walk
 
 from crewai import Task
 # NOTE: we intentionally do NOT import UnveilCrew here to avoid any accidental CrewBase bootstrapping.
-from geist_agent.unveil_tools import (
+from geist_agent.unveil.unveil_tools import (
     chunk_file, static_imports,
     infer_edges_and_externals, components_from_paths, render_report
 )
@@ -135,12 +136,6 @@ def run_unveil(
         except Exception:
             return {}
 
-    # choose extension profile (DRY: both live in utils)
-    try:
-        from utils import SCAN_EXTS_FAST, SCAN_EXTS_FULL, walk_files_compat as _walk
-    except Exception:
-        from geist_agent.utils import SCAN_EXTS_FAST, SCAN_EXTS_FULL, walk_files_compat as _walk
-
     include = include or []
     cli_exts = [e.lower() for e in (exts or [])]
     effective_exts = cli_exts or (list(SCAN_EXTS_FULL) if full else list(SCAN_EXTS_FAST))
@@ -259,3 +254,4 @@ def run_unveil(
 
     _log(verbose, f"✓ Done in {time.time()-start:.1f}s → {out_path}")
     return out_path
+

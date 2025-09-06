@@ -1,4 +1,4 @@
-# src/geist_agent/unveil_tools.py
+﻿# src/geist_agent/unveil/unveil_tools.py
 from __future__ import annotations
 from pathlib import Path
 from typing import Iterable, List, Dict, Tuple, Optional
@@ -434,4 +434,5 @@ def render_report(
     out_path = out_dir / fname
     out_path.write_text("\n".join(md), encoding="utf-8")
     return out_path
+
 

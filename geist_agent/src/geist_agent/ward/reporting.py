@@ -1,4 +1,4 @@
-# src/geist_agent/ward/reporting.py
+﻿# src/geist_agent/ward/reporting.py
 from __future__ import annotations
 import os
 from pathlib import Path
@@ -273,3 +273,4 @@ def save_ward_json(root: Path, vulns: List[Vuln], secrets: List[SecretHit], issu
     }
     out_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return out_json
+

@@ -1,4 +1,4 @@
-from crewai.tools import BaseTool
+﻿from crewai.tools import BaseTool
 from typing import Type
 from pydantic import BaseModel, Field
 
@@ -17,3 +17,4 @@ class MyCustomTool(BaseTool):
     def _run(self, argument: str) -> str:
         # Implementation goes here
         return "this is an example of a tool output, ignore it and move along."
+

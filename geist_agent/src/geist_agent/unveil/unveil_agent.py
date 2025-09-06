@@ -1,4 +1,4 @@
-# src/geist_agent/unveil_agent.py
+﻿# src/geist_agent/unveil/unveil_agent.py
 from __future__ import annotations
 from pathlib import Path
 from typing import List
@@ -74,3 +74,4 @@ class UnveilCrew:
             process=Process.sequential,
             verbose=True,
         )
+

@@ -1,4 +1,4 @@
-# src/geist_agent/ward/runner.py
+﻿# src/geist_agent/ward/runner.py
 from __future__ import annotations
 import argparse
 from pathlib import Path
@@ -172,3 +172,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

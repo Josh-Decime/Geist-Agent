@@ -1,4 +1,4 @@
-# src/geist_agent/doctor.py
+﻿# src/geist_agent/doctor.py
 from __future__ import annotations
 import os, json, sys, urllib.request
 from dataclasses import dataclass
@@ -139,3 +139,4 @@ def run(as_json: bool = False) -> int:
     _render_table(results)
     console.print("\n[bold green]System ready.[/bold green]" if not critical_fail else "\n[bold red]Some critical checks failed.[/bold red]")
     return 1 if critical_fail else 0
+
