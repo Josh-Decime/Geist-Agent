@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 from typing import List, Optional
-from geist_agent.utils import walk_files_compat as walk_files, DEFAULT_EXTS, SKIP_DIRS, PathUtils, ReportUtils
+from geist_agent.utils import walk_files_compat as walk_files, PathUtils, ReportUtils
 
 # Core pieces from the split modules
 from geist_agent.ward.common import _log, _reset_scan_meta, _llm_profile, SCAN_META

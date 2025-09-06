@@ -6,7 +6,7 @@ import json
 import sys
 import time
 from contextlib import contextmanager
-from geist_agent.utils import DEFAULT_EXTS, SKIP_DIRS, walk_files_compat as walk_files
+from geist_agent.utils import walk_files_compat as walk_files
 
 from crewai import Task
 # NOTE: we intentionally do NOT import UnveilCrew here to avoid any accidental CrewBase bootstrapping.
@@ -137,6 +137,7 @@ def run_unveil(
     max_files: int,
     title: str = "Unveil: Codebase Map",
     verbose: bool = True,
+    full: bool = False,  # NEW: broader scan profile
 ) -> Path:
     # --- tiny local logger so type checkers are happy
     def _log(show: bool, msg: str) -> None:
@@ -147,12 +148,10 @@ def run_unveil(
         """Accept plain JSON or ```json fenced blocks; return {} on failure."""
         txt = str(s).strip()
         if "```" in txt:
-            # Extract first fenced block if present
             start = txt.find("```")
             end = txt.find("```", start + 3)
             if end > start:
                 block = txt[start + 3:end]
-                # strip possible language tag like "json\n"
                 first_nl = block.find("\n")
                 if first_nl != -1:
                     block = block[first_nl + 1 :]
@@ -162,12 +161,22 @@ def run_unveil(
         except Exception:
             return {}
 
+    # choose extension profile (DRY: both live in utils)
+    try:
+        from utils import SCAN_EXTS_FAST, SCAN_EXTS_FULL, walk_files_compat as _walk
+    except Exception:
+        from geist_agent.utils import SCAN_EXTS_FAST, SCAN_EXTS_FULL, walk_files_compat as _walk
+
     include = include or []
-    exts = [e.lower() for e in (exts or [])] or None
+    cli_exts = [e.lower() for e in (exts or [])]
+    effective_exts = cli_exts or (list(SCAN_EXTS_FULL) if full else list(SCAN_EXTS_FAST))
+    profile = "FULL" if full else "FAST"
 
     root = Path(path).resolve()
     _log(verbose, f"▶ Scanning: {root}")
-    files = walk_files(root, include, exclude, exts, max_files)
+    _log(verbose, f"• Using {profile} profile (exts={len(effective_exts)})")
+
+    files = _walk(root, include, exclude, effective_exts, max_files)
     _log(verbose, f"• Files found: {len(files)}")
 
     # --- 1) Chunk + static imports
@@ -182,7 +191,6 @@ def run_unveil(
 
     # --- 2) File-level summaries via File Analyst (LLM)
     start = time.time()
-    # Load .env if your utils provide it (safe if missing)
     try:
         from geist_agent.utils import EnvUtils
         if hasattr(EnvUtils, "load_env_for_tool"):
@@ -190,7 +198,6 @@ def run_unveil(
     except Exception:
         pass
 
-    # Apply UNVEIL_* overrides just for agent creation/execution
     with _llm_profile("UNVEIL"):
         file_analyst, architect = _get_unveil_agents()
 
@@ -221,11 +228,9 @@ def run_unveil(
             data = _parse_json_maybe_fenced(ans)
             if not isinstance(data, dict):
                 data = {}
-        except Exception as e:
-            _log(verbose, f"    ⚠️ Failed summarizing {rel}: {type(e).__name__}")
+        except Exception:
             data = {}
 
-        # Fill defaults defensively
         data = {
             "role": data.get("role", ""),
             "api": data.get("api", []) or [],
@@ -238,8 +243,7 @@ def run_unveil(
         dt = time.time() - t0
         _log(verbose, f"  ← Done {rel} in {dt:0.1f}s ({i}/{total})")
 
-
-    # --- 3) Static-linking (deterministic) + externals
+    # --- 3) Static-linking + externals
     _log(verbose, "• Inferring edges/components…")
     edges, externals = infer_edges_and_externals(root, files, static_map)
     components = components_from_paths([p.relative_to(root).as_posix() for p in files])
@@ -262,16 +266,12 @@ def run_unveil(
         MAX_CHARS = 5000
         if len(narrative) > MAX_CHARS:
             narrative = narrative[:MAX_CHARS] + "\n\n*(truncated)*"
-    except Exception as e:
-        narrative = f"Overview not available (architect step failed: {type(e).__name__})."
+    except Exception:
+        narrative = "Overview not available (architect step failed)."
     summaries["__repo__"] = {"narrative": narrative}
 
     # --- 5) Render
     _log(verbose, "• Rendering report…")
-
-    # derive safe base name from the repo root for filename
-    repo_name = root.name or "unknown_root"
-
     out_path = render_report(
         title=title,
         root=root,
@@ -280,9 +280,8 @@ def run_unveil(
         components=components,
         externals=externals,
         reports_subfolder="unveil_reports",
-        filename_topic=root.name,   # 👈 pass Job_Hunter, geist_agent, etc
+        filename_topic=root.name,
     )
 
     _log(verbose, f"✓ Done in {time.time()-start:.1f}s → {out_path}")
     return out_path
-

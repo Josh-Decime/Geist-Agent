@@ -147,9 +147,8 @@ class PathUtils:
         return out
     
 
-# ----------[ CONSTANTS & DEFAULTS ]----------
-# Broad on purpose; each tool can pass narrower include_exts when needed.
-DEFAULT_EXTS = {
+# ----------[ EXTENSION PROFILES ]----------
+SCAN_EXTS_FULL = {
     # Python & notebooks
     ".py", ".ipynb",
     # JS/TS stacks
@@ -169,6 +168,12 @@ DEFAULT_EXTS = {
     "Dockerfile", "dockerfile",
 }
 
+SCAN_EXTS_FAST = {
+    ".py",".js",".mjs",".cjs",".ts",".tsx",".jsx",
+    ".java",".kt",".kts",".c",".h",".hpp",".hh",".cc",".cpp",".cs",
+    ".go",".rb",".php",".sql",".vue",".html",".htm",".css",".scss",".sass",
+}
+
 SKIP_DIRS = {
     ".git", ".svn", ".hg",
     "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
@@ -177,11 +182,17 @@ SKIP_DIRS = {
     ".idea", ".vscode", ".DS_Store", ".egg-info",
 }
 
+def _preview(seq, n=6):
+    seq = list(seq or [])
+    head = ", ".join(map(str, seq[:n]))
+    more = f" …(+{len(seq)-n})" if len(seq) > n else ""
+    return head + more if head else "NONE"
+
 def _log_walk_start(root: Path, include_exts, exclude_dirs, ignore_globs, follow_symlinks):
     print(f"▶ walk_files: root='{root}'")
-    print(f"  • include_exts={sorted(include_exts) if include_exts else 'ALL'}")
-    print(f"  • exclude_dirs={sorted(exclude_dirs) if exclude_dirs else 'NONE'}")
-    print(f"  • ignore_globs={ignore_globs or 'NONE'}")
+    print(f"  • include_exts[{0 if include_exts is None else len(include_exts)}]={_preview(sorted(include_exts) if include_exts else [])}")
+    print(f"  • exclude_dirs[{len(exclude_dirs) if exclude_dirs else 0}]={_preview(sorted(exclude_dirs) if exclude_dirs else [])}")
+    print(f"  • ignore_globs[{len(ignore_globs) if ignore_globs else 0}]={_preview(ignore_globs or [])}")
     print(f"  • follow_symlinks={follow_symlinks}")
 
 def _should_skip_dir(name: str, exclude_dirs: set[str]) -> bool:
@@ -217,7 +228,7 @@ def walk_files(
     - follow_symlinks: whether to follow directory symlinks
     """
     root = Path(root).resolve()
-    include_exts = include_exts or DEFAULT_EXTS
+    include_exts = include_exts or SCAN_EXTS_FULL
     exclude_dirs = exclude_dirs or SKIP_DIRS
     ignore_globs = ignore_globs or []
 
@@ -290,7 +301,7 @@ def walk_files_compat(
     root = Path(root).resolve()
     include = [i.rstrip("/\\") for i in (include or [])]
     exclude = [e.rstrip("/\\") for e in (exclude or [])]
-    allow = set(e.lower() for e in (exts or [])) or None  # None ⇒ use DEFAULT_EXTS
+    allow = set(e.lower() for e in (exts or [])) or None  # None ⇒ use SCAN_EXTS_FULL
 
     stream = walk_files(
         root=root,

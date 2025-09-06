@@ -68,8 +68,18 @@ def unveil_cmd(
     ),
     ext: List[str] = typer.Option(None, "--ext", show_default=False),
     max_files: int = typer.Option(800, "--max-files"),
+    full: bool = typer.Option(False, "--full", help="Use broad file profile (configs/docs/assets)."),
 ):
-    out = run_unveil(path, include, exclude, ext, max_files, title="Unveil: Codebase Map", verbose=True)
+    out = run_unveil(
+        path=path,
+        include=include,
+        exclude=exclude,
+        exts=ext,
+        max_files=max_files,
+        title="Unveil: Codebase Map",
+        verbose=True,
+        full=full,            # <-- pass through
+    )
     typer.secho(f"Unveil report written to:  {out}", fg="green")
 
 
