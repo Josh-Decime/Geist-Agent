@@ -2,8 +2,10 @@ import re
 import os
 from pathlib import Path
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Iterable
 from dotenv import load_dotenv
+from fnmatch import fnmatch
+from itertools import islice
 
 
 class ReportUtils:
@@ -143,3 +145,162 @@ class PathUtils:
         out = base / subfolder if subfolder else base
         out.mkdir(parents=True, exist_ok=True)
         return out
+    
+
+# ----------[ CONSTANTS & DEFAULTS ]----------
+# Broad on purpose; each tool can pass narrower include_exts when needed.
+DEFAULT_EXTS = {
+    # Python & notebooks
+    ".py", ".ipynb",
+    # JS/TS stacks
+    ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
+    # Web assets & docs
+    ".css", ".scss", ".sass", ".html", ".htm", ".json", ".md",
+    # Configs
+    ".toml", ".yaml", ".yml", ".ini", ".cfg", ".conf",
+    # Shell
+    ".sh", ".bash", ".zsh",
+    # Other langs Unveil/Ward parse or display
+    ".java", ".kt", ".kts", ".c", ".h", ".hpp", ".hh", ".cc", ".cpp", ".cs",
+    ".sql", ".go", ".rb", ".php", ".vue",
+    # Locks & infra (Ward benefits)
+    ".lock", ".tf", ".tfvars", ".pem", ".key", ".crt", ".pub", ".txt",
+    # Special filenames (no suffix)
+    "Dockerfile", "dockerfile",
+}
+
+SKIP_DIRS = {
+    ".git", ".svn", ".hg",
+    "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+    ".venv", "venv", "env",
+    "node_modules", "dist", "build", "target", "out", ".next", ".nuxt",
+    ".idea", ".vscode", ".DS_Store", ".egg-info",
+}
+
+def _log_walk_start(root: Path, include_exts, exclude_dirs, ignore_globs, follow_symlinks):
+    print(f"▶ walk_files: root='{root}'")
+    print(f"  • include_exts={sorted(include_exts) if include_exts else 'ALL'}")
+    print(f"  • exclude_dirs={sorted(exclude_dirs) if exclude_dirs else 'NONE'}")
+    print(f"  • ignore_globs={ignore_globs or 'NONE'}")
+    print(f"  • follow_symlinks={follow_symlinks}")
+
+def _should_skip_dir(name: str, exclude_dirs: set[str]) -> bool:
+    # quick checks for common junk/system dirs
+    return (name in exclude_dirs) or name.startswith(".")
+
+def _is_included_file(path: Path, include_exts: set[str] | None) -> bool:
+    if include_exts is None:
+        return True
+    # Handle both “Dockerfile” (no suffix) and normal suffixes
+    if path.name in include_exts:
+        return True
+    return path.suffix.lower() in include_exts
+
+def _is_ignored_by_globs(rel_posix: str, ignore_globs: list[str] | None) -> bool:
+    if not ignore_globs:
+        return False
+    # Match against the posix-style relative path and the basename
+    return any(fnmatch(rel_posix, pat) or fnmatch(rel_posix.split("/")[-1], pat) for pat in ignore_globs)
+
+def walk_files(
+    root: str | Path,
+    include_exts: set[str] | None = None,
+    exclude_dirs: set[str] | None = None,
+    ignore_globs: list[str] | None = None,
+    follow_symlinks: bool = False,
+):
+    """
+    Yield Paths for files in `root` that match extensions and ignore patterns.
+    - include_exts: set of extensions (e.g., {'.py', '.js'}) or filenames (e.g., {'Dockerfile'})
+    - exclude_dirs: directory names to skip anywhere in the tree
+    - ignore_globs: shell-style patterns tested against the relative posix path, e.g. ['**/*.min.js', '*.lock']
+    - follow_symlinks: whether to follow directory symlinks
+    """
+    root = Path(root).resolve()
+    include_exts = include_exts or DEFAULT_EXTS
+    exclude_dirs = exclude_dirs or SKIP_DIRS
+    ignore_globs = ignore_globs or []
+
+    _log_walk_start(root, include_exts, exclude_dirs, ignore_globs, follow_symlinks)
+
+    # Manual stack-based walk to support follow_symlinks=True without os.walk quirks
+    stack = [root]
+    emitted = 0
+
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    name = entry.name
+
+                    # Skip common noise and requested dirs
+                    if entry.is_dir(follow_symlinks=False):
+                        if _should_skip_dir(name, exclude_dirs):
+                            # verbose skip log
+                            # print(f"  ⤫ DIR-SKIP: {entry.path}")
+                            continue
+                        if entry.is_symlink() and not follow_symlinks:
+                            # print(f"  ⤫ SYMLINK-DIR-SKIP: {entry.path}")
+                            continue
+                        stack.append(Path(entry.path))
+                        continue
+
+                    # Files
+                    path = Path(entry.path)
+                    try:
+                        rel = path.relative_to(root).as_posix()
+                    except Exception:
+                        rel = path.as_posix()
+
+                    if _is_ignored_by_globs(rel, ignore_globs):
+                        # print(f"  ⤫ GLOB-IGNORE: {rel}")
+                        continue
+                    if not _is_included_file(path, include_exts):
+                        # print(f"  ⤫ EXT-IGNORE: {rel}")
+                        continue
+
+                    emitted += 1
+                    if emitted % 250 == 0:
+                        print(f"  • walked {emitted} files…")
+                    yield path
+        except PermissionError:
+            print(f"  ⚠ perm denied: {current}")
+        except FileNotFoundError:
+            print(f"  ⚠ gone during walk: {current}")
+        except OSError as e:
+            print(f"  ⚠ os error on {current}: {e}")
+
+    print(f"✓ walk_files complete: {emitted} files")
+
+def _prefix_ok(rel_posix: str, includes: list[str], excludes: list[str]) -> bool:
+    if any(rel_posix.startswith(e.rstrip("/")) for e in excludes):
+        return False
+    if includes and not any(rel_posix.startswith(i.rstrip("/")) for i in includes):
+        return False
+    return True
+
+def walk_files_compat(
+    root: Path | str,
+    include: Iterable[str],
+    exclude: Iterable[str],
+    exts: Optional[Iterable[str]],
+    max_files: int,
+) -> List[Path]:
+    root = Path(root).resolve()
+    include = [i.rstrip("/\\") for i in (include or [])]
+    exclude = [e.rstrip("/\\") for e in (exclude or [])]
+    allow = set(e.lower() for e in (exts or [])) or None  # None ⇒ use DEFAULT_EXTS
+
+    stream = walk_files(
+        root=root,
+        include_exts=allow if allow else None,
+        exclude_dirs=SKIP_DIRS,
+        ignore_globs=[],          # you can add patterns later (e.g., ["**/*.min.js"])
+        follow_symlinks=False,
+    )
+    filtered = (
+        p for p in stream
+        if _prefix_ok(p.relative_to(root).as_posix(), include, exclude)
+    )
+    return list(islice(filtered, max_files))

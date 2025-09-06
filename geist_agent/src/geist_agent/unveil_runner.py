@@ -6,11 +6,12 @@ import json
 import sys
 import time
 from contextlib import contextmanager
+from geist_agent.utils import DEFAULT_EXTS, SKIP_DIRS, walk_files_compat as walk_files
 
 from crewai import Task
 # NOTE: we intentionally do NOT import UnveilCrew here to avoid any accidental CrewBase bootstrapping.
 from geist_agent.unveil_tools import (
-    walk_files, chunk_file, static_imports,
+    chunk_file, static_imports,
     infer_edges_and_externals, components_from_paths, render_report
 )
 
