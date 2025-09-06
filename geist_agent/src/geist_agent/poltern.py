@@ -10,11 +10,6 @@ print(f"• Loaded .env sources: {loaded_sources}")
 from geist_agent.scrying import ScryingAgent
 from geist_agent import doctor as doctor_mod
 from geist_agent.unveil_runner import run_unveil
-
-# --- Old ward implementation ---
-#     from geist_agent.ward_runner import run_ward
-
-# --- New ward implementation ---
 from geist_agent.ward.runner import run_ward as ward_run
 
 
@@ -82,38 +77,7 @@ def unveil_cmd(
     )
     typer.secho(f"Unveil report written to:  {out}", fg="green")
 
-
-# ---------- OLD ward --------------
-# @app.command("ward", help="Run security audit (OSV + secrets + risky patterns + LLM recommendations)")
-# def ward_cmd(
-#     path: str = typer.Option(".", "--path", "-p", help="Project root to audit"),
-#     include: List[str] = typer.Option(None, "--include", help="Prefix filters (repeatable)"),
-#     exclude: List[str] = typer.Option(None, "--exclude", help="Prefix filters (repeatable)"),
-#     ext: List[str] = typer.Option(None, "--ext", help="Allowed extensions (repeatable)"),
-#     max_files: int = typer.Option(3000, "--max-files", help="Max files to scan"),
-#     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress progress logs"),
-#     no_osv: bool = typer.Option(False, "--no-osv", help="Disable OSV if present"),
-#     no_redact: bool = typer.Option(False, "--no-redact", help="Do NOT redact secrets (discouraged)"),
-#     preview: bool = typer.Option(False, "--preview", help="Masked preview for secrets"),
-#     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM recommendations"),
-#     json: bool = typer.Option(False, "--json", help="Also write a JSON artifact for CI/diffs"),
-# ):
-#     out = run_ward(
-#         path=path,
-#         include=include or None,
-#         exclude=exclude or None,
-#         exts=ext or None,
-#         max_files=max_files,
-#         verbose=not quiet,
-#         use_osv=not no_osv,
-#         redact=not no_redact,
-#         preview=preview,
-#         llm=not no_llm,         # ON by default
-#         write_json=json,        # OFF by default; enable with --json
-#     )
-#     typer.secho(f"Ward report written to: {out}", fg="green")
-
-# ---------- NEW ward --------------
+# ---------- ward --------------
 @app.command("ward", help="Run security audit (OSV + secrets + risky patterns + LLM recommendations)")
 def ward_cmd(
     path: str = typer.Option(".", "--path", "-p", help="Project root to audit"),

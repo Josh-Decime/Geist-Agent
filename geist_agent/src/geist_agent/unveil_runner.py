@@ -6,7 +6,6 @@ import json
 import sys
 import time
 from contextlib import contextmanager
-from geist_agent.utils import walk_files_compat as walk_files
 
 from crewai import Task
 # NOTE: we intentionally do NOT import UnveilCrew here to avoid any accidental CrewBase bootstrapping.
@@ -102,31 +101,6 @@ def _get_unveil_agents():
         ),
     )
     return file_analyst, architect
-
-
-# NOT BEING CALLED DELETE & VERIFY NO ISSUES
-# ---------- tiny CLI utils (stdout logger, JSON fence parser) ----------
-def _log(enabled: bool, msg: str):
-    if enabled:
-        print(msg, file=sys.stdout, flush=True)
-
-
-def _parse_json_maybe_fenced(s: str) -> dict:
-    """Accept raw model output; strip ```json fences if present, return dict or empty structure."""
-    txt = str(s).strip()
-    if txt.startswith("```"):
-        # carve out ```json ... ```
-        if txt.lower().startswith("```json"):
-            txt = txt[7:]
-        else:
-            txt = txt[3:]
-        if "```" in txt:
-            txt = txt.split("```", 1)[0]
-    try:
-        return json.loads(txt)
-    except Exception:
-        return {"role": "", "api": [], "summary": [], "suspects_deps": [], "callers_guess": []}
-
 
 # ---------- command entry ----------
 def run_unveil(

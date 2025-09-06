@@ -85,40 +85,6 @@ def _format_summary_list(summary_val: Any, max_items: int = 8, max_len: int = 30
             out.append(s)
     return out
 
-
-# # ---------- constants & directory filters ----------
-# DEFAULT_EXTS = {
-#     ".py",".js",".mjs",".cjs",".ts",".tsx",".jsx",".css",".html",".htm",
-#     ".java",".kt",".kts",".c",".h",".hpp",".hh",".cc",".cpp",".cs",".sql",
-#     ".go",".rb",".php", ".vue"
-# }
-# SKIP_DIRS = {".git",".hg",".svn",".venv","venv","__pycache__","node_modules",
-#              ".mypy_cache",".pytest_cache",".ruff_cache",".idea",".vscode",
-#              "dist","build",".egg-info","target","out"}
-
-# # ---------- file walking ----------
-# def walk_files(root: Path, include: Iterable[str], exclude: Iterable[str],
-#                exts: Optional[Iterable[str]], max_files: int) -> List[Path]:
-#     inc = [i.rstrip("/\\") for i in (include or [])]
-#     exc = [e.rstrip("/\\") for e in (exclude or [])]
-#     allow = set(e.lower() for e in (exts or [])) or DEFAULT_EXTS
-#     found: List[Path] = []
-#     for cur, dirs, files in os.walk(root):
-#         dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not any((Path(cur)/d).as_posix().startswith(f"{root.as_posix()}/{ee}") for ee in exc)]
-#         for f in files:
-#             p = Path(cur, f)
-#             if p.suffix.lower() not in allow:
-#                 continue
-#             rel = p.relative_to(root).as_posix()
-#             if any(rel.startswith(ee) for ee in exc):
-#                 continue
-#             if inc and not any(rel.startswith(ii) for ii in inc):
-#                 continue
-#             found.append(p)
-#             if len(found) >= max_files:
-#                 return found
-#     return found
-
 # ---------- chunking ----------
 def chunk_file(p: Path, max_chars: int = 6000) -> List[str]:
     txt = p.read_text(encoding="utf-8", errors="replace")
