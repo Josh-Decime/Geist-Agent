@@ -6,11 +6,11 @@ from typing import List, Optional
 from geist_agent.utils import walk_files_compat as walk_files, PathUtils, ReportUtils
 
 # Core pieces from the split modules
-from geist_agent.ward.common import _log, _reset_scan_meta, _llm_profile, SCAN_META
-from geist_agent.ward.scanning import (
+from geist_agent.ward.ward_common import _log, _reset_scan_meta, _llm_profile, SCAN_META
+from geist_agent.ward.ward_scanning import (
     _osv_scan, _osv_api_scan, _enrich_vulns_with_details, scan_secrets_and_issues
 )
-from geist_agent.ward.reporting import (
+from geist_agent.ward.ward_reporting import (
     _sev_counts, render_ward_markdown, save_ward_json, _format_scan_input,
     _vuln_details_url, _build_vulnerability_summary_md, _extract_theme_counts,
     _get_ward_advisor, llm_recommendations_with,
@@ -43,7 +43,7 @@ def run_ward(
     method_tag = "OSV disabled"
     vulns = []
     if use_osv:
-        from geist_agent.ward.common import _which
+        from geist_agent.ward.ward_common import _which
         exe = _which("osv-scanner")
         if exe and not force_api:
             method_tag = "OSV CLI"

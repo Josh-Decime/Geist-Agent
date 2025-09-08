@@ -1,4 +1,5 @@
 ﻿# src/geist_agent/ward/__init__.py
-from .runner import run_ward, main
-from .common import Vuln, SecretHit, Issue
+from .ward_runner import run_ward, main
+from .ward_common import Vuln, SecretHit, Issue
 
+__all__ = ["run_ward", "main", "Vuln", "SecretHit", "Issue"]

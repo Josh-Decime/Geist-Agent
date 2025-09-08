@@ -6,7 +6,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict, Counter
 import re, json
 
-from geist_agent.ward.common import Vuln, SecretHit, Issue, _sev_sort_key
+from geist_agent.ward.ward_common import Vuln, SecretHit, Issue, _sev_sort_key
 from geist_agent.utils import PathUtils
 
 # ---------- LLM advisor ----------

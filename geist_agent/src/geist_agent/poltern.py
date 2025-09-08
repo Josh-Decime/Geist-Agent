@@ -10,7 +10,7 @@ print(f"• Loaded .env sources: {loaded_sources}")
 from geist_agent.scrying import ScryingAgent
 from geist_agent import doctor as doctor_mod
 from geist_agent.unveil.unveil_runner import run_unveil
-from geist_agent.ward.runner import run_ward as ward_run
+from geist_agent.ward.ward_runner import run_ward as ward_run
 
 
 app = typer.Typer(help="Poltergeist CLI")
