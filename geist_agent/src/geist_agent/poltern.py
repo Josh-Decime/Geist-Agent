@@ -11,7 +11,7 @@ from geist_agent.scrying import ScryingAgent
 from geist_agent import doctor as doctor_mod
 from geist_agent.unveil.unveil_runner import run_unveil
 from geist_agent.ward.ward_runner import run_ward as ward_run
-
+from geist_agent.seance import seance_runner as seance_mod
 
 app = typer.Typer(help="Poltergeist CLI")
 
@@ -106,6 +106,76 @@ def ward_cmd(
         write_json=json,  # OFF by default; enable with --json
     )
     typer.secho(f"Ward report written to: {out}", fg="green")
+
+# ---------- seance ------------
+@app.command(
+    "seance",
+    help="Connect to a filebase and ask questions about the codebase (or any supported text files).",
+    epilog=(
+        "Modes:\n"
+        "  connect   Initialize .geist/seance/<name>/ (no indexing yet)\n"
+        "  index     Build or update the index incrementally\n"
+        "  ask       One-shot Q&A with sources\n"
+        "  chat      Interactive REPL; saves a transcript\n\n"
+        "Examples:\n"
+        "  poltergeist seance connect --path . --name app-core\n"
+        "  poltergeist seance index --name app-core\n"
+        "  poltergeist seance ask --question \"Where are Typer subcommands registered?\" --name app-core -k 8\n"
+        "  poltergeist seance chat --name app-core\n"
+    ),
+)
+def seance_cmd(
+    mode: str = typer.Argument("chat", metavar="MODE", help="connect | index | ask | chat (default: chat)"),
+    # shared
+    path: str = typer.Option(".", "--path", "-p", help="Root path of the filebase"),
+    name: str = typer.Option(None, "--name", "-n", help="Seance name (default: derived from folder)"),
+    # retrieval/answering knobs
+    k: int = typer.Option(6, "--k", help="How many chunks to retrieve (ask/chat)"),
+    show_sources: bool = typer.Option(True, "--show-sources/--no-show-sources", help="Show citations in output"),
+    # index knobs
+    max_chars: int = typer.Option(1200, "--max-chars", help="Max chars per chunk (index)"),
+    overlap: int = typer.Option(150, "--overlap", help="Chunk overlap in chars (index)"),
+    # ask-only
+    question: str = typer.Option(None, "--question", "-q", help="Question for mode=ask"),
+):
+    """
+    Wrapper so 'seance' behaves like our other single-entry commands.
+    Routes to connect/index/ask/chat in geist_agent.seance.seance_runner.
+    """
+    mode = mode.strip().lower()
+
+    if mode == "connect":
+        # Initialize .geist/seance/<name> (no indexing)
+        seance_mod.connect(path=path, name=name)
+        return
+
+    if mode == "index":
+        # Build or update index
+        seance_mod.index(path=path, name=name, max_chars=max_chars, overlap=overlap)
+        return
+
+    if mode == "ask":
+        if not question:
+            raise typer.BadParameter("Provide --question (or use mode=chat for an interactive session).")
+        seance_mod.ask(
+            question=question,
+            path=path,
+            name=name,
+            k=k,
+            show_sources=show_sources,
+        )
+        return
+
+    if mode == "chat":
+        seance_mod.chat(
+            path=path,
+            name=name,
+            k=k,
+            show_sources=show_sources,
+        )
+        return
+
+    raise typer.BadParameter("MODE must be one of: connect, index, ask, chat")
 
 
 
