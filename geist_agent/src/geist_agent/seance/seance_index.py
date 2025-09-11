@@ -7,6 +7,8 @@ from typing import Dict, Optional
 import json
 import time
 
+from geist_agent.utils import PathUtils
+
 from .seance_common import (
     Chunk, is_supported, should_ignore, read_text_safely,
     tokenize, greedy_line_chunk, file_hash, make_chunk_id
@@ -33,7 +35,14 @@ class Manifest:
 # ──────────────────────────────── Paths & IO ───────────────────────────────────
 
 def seance_dir(root: Path, name: str) -> Path:
-    return root / ".geist" / "seance" / name
+    """
+    Store all séance artifacts outside the repo to avoid commits:
+      ~/.geist/reports/seance/<name>/
+    """
+    base = PathUtils.ensure_reports_dir("seance")  # ~/.geist/reports/seance
+    d = Path(base) / name
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 def manifest_path(root: Path, name: str) -> Path:
     return seance_dir(root, name) / "manifest.json"

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import json
+import os
+import textwrap
 
 from .seance_index import load_manifest, index_path
 from .seance_common import tokenize
+
 
 # ─────────────────────────────── Retrieval ─────────────────────────────────────
 
@@ -51,19 +54,84 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
 
 # ─────────────────────────────── Answering ─────────────────────────────────────
 
-def generate_answer(query: str, contexts: List[Tuple[str, str, int, int, str]]) -> str:
+def _build_prompt(question: str, contexts: List[Tuple[str, str, int, int, str]]) -> str:
+    blocks = []
+    for (_cid, file, s, e, preview) in contexts:
+        blocks.append(f"### {file}:{s}-{e}\n{preview}")
+    return textwrap.dedent(f"""
+    You are an expert software assistant. Answer the user's question using ONLY the provided code excerpts.
+    Always cite the files and line ranges you used, like: file.py:10-35.
+
+    Question:
+    {question}
+
+    Context:
+    {'\n\n'.join(blocks)}
+
+    Return a concise answer (bullets okay) followed by a "Sources:" section listing the citations you used.
+    """).strip()
+
+def generate_answer(
+    question: str,
+    contexts: List[Tuple[str, str, int, int, str]],
+    use_llm: bool = True,
+    model: Optional[str] = None,
+    timeout: int = 30,
+) -> Tuple[str, str, Optional[str]]:
     """
-    Non-LLM, readable baseline answer: shows top findings and previews with citations.
-    contexts: list of (chunk_id, file, start_line, end_line, preview)
+    LLM-first answer generation. Falls back to extractive preview if LLM is disabled or unavailable.
+    Returns: (answer_text, mode, reason)
+      - mode: "llm" or "fallback"
+      - reason: str for why we fell back (None when mode == "llm")
     """
+    # LLM primary path
+    if use_llm:
+        api_key = os.getenv("OPENAI_API_KEY")
+        model_id = model or os.getenv("GEIST_SEANCE_OPENAI_MODEL", "gpt-4o-mini")
+        if api_key:
+            try:
+                import requests
+                prompt = _build_prompt(question, contexts)
+                body = {"model": model_id, "input": prompt}
+                resp = requests.post(
+                    "https://api.openai.com/v1/responses",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    data=json.dumps(body),
+                    timeout=timeout,
+                )
+                if resp.status_code < 400:
+                    data = resp.json()
+                    txt = (
+                        data.get("output_text")
+                        or data.get("choices", [{}])[0].get("message", {}).get("content")
+                    )
+                    if txt:
+                        return txt, "llm", None
+                    # If API returned but no text, fall through to fallback with reason
+                    return _fallback_answer(question, contexts), "fallback", "LLM returned empty content"
+                else:
+                    reason = f"LLM HTTP {resp.status_code}: {resp.text[:200]}"
+                    return _fallback_answer(question, contexts), "fallback", reason
+            except Exception as e:
+                return _fallback_answer(question, contexts), "fallback", f"LLM error: {e.__class__.__name__}: {e}"
+        else:
+            return _fallback_answer(question, contexts), "fallback", "OPENAI_API_KEY missing"
+
+    # User disabled LLM
+    return _fallback_answer(question, contexts), "fallback", "LLM disabled via flag"
+
+def _fallback_answer(question: str, contexts: List[Tuple[str, str, int, int, str]]) -> str:
     bullets = []
     for (_, file, s, e, preview) in contexts:
         snippet = preview.strip().splitlines()[:6]
         bullets.append(f"- {file}:{s}-{e}\n  " + "\n  ".join(snippet))
     src_lines = "\n".join(bullets)
     return (
-        f"Q: {query}\n\n"
+        f"Q: {question}\n\n"
         f"Top findings (preview):\n"
         f"{src_lines}\n\n"
-        f"(Tip: enable a model in generate_answer() for synthesized summaries.)"
+        f"(LLM was unavailable or disabled; showing extractive preview.)"
     )
