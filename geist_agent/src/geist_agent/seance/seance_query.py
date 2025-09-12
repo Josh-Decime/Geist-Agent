@@ -9,7 +9,7 @@ import textwrap
 
 from .seance_index import load_manifest, index_path
 from .seance_common import tokenize
-
+from .seance_agent import SeanceAgent
 
 # ─────────────────────────────── Retrieval ─────────────────────────────────────
 
@@ -76,52 +76,25 @@ def generate_answer(
     contexts: List[Tuple[str, str, int, int, str]],
     use_llm: bool = True,
     model: Optional[str] = None,
-    timeout: int = 30,
+    timeout: int = 30,  # kept for signature compatibility; not used by CrewAI path
 ) -> Tuple[str, str, Optional[str]]:
     """
-    LLM-first answer generation. Falls back to extractive preview if LLM is disabled or unavailable.
+    LLM-first (CrewAI) answer generation. Falls back to extractive preview if disabled or errors.
     Returns: (answer_text, mode, reason)
       - mode: "llm" or "fallback"
       - reason: str for why we fell back (None when mode == "llm")
     """
-    # LLM primary path
-    if use_llm:
-        api_key = os.getenv("OPENAI_API_KEY")
-        model_id = model or os.getenv("GEIST_SEANCE_OPENAI_MODEL", "gpt-4o-mini")
-        if api_key:
-            try:
-                import requests
-                prompt = _build_prompt(question, contexts)
-                body = {"model": model_id, "input": prompt}
-                resp = requests.post(
-                    "https://api.openai.com/v1/responses",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    data=json.dumps(body),
-                    timeout=timeout,
-                )
-                if resp.status_code < 400:
-                    data = resp.json()
-                    txt = (
-                        data.get("output_text")
-                        or data.get("choices", [{}])[0].get("message", {}).get("content")
-                    )
-                    if txt:
-                        return txt, "llm", None
-                    # If API returned but no text, fall through to fallback with reason
-                    return _fallback_answer(question, contexts), "fallback", "LLM returned empty content"
-                else:
-                    reason = f"LLM HTTP {resp.status_code}: {resp.text[:200]}"
-                    return _fallback_answer(question, contexts), "fallback", reason
-            except Exception as e:
-                return _fallback_answer(question, contexts), "fallback", f"LLM error: {e.__class__.__name__}: {e}"
-        else:
-            return _fallback_answer(question, contexts), "fallback", "OPENAI_API_KEY missing"
+    if not use_llm:
+        return _fallback_answer(question, contexts), "fallback", "LLM disabled via flag"
 
-    # User disabled LLM
-    return _fallback_answer(question, contexts), "fallback", "LLM disabled via flag"
+    try:
+        agent = SeanceAgent()
+        txt = agent.answer(question=question, contexts=contexts, model=model)
+        if txt and txt.strip():
+            return txt, "llm", None
+        return _fallback_answer(question, contexts), "fallback", "LLM returned empty content"
+    except Exception as e:
+        return _fallback_answer(question, contexts), "fallback", f"LLM error: {e.__class__.__name__}: {e}"
 
 def _fallback_answer(question: str, contexts: List[Tuple[str, str, int, int, str]]) -> str:
     bullets = []
