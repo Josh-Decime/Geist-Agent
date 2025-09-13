@@ -76,20 +76,20 @@ def generate_answer(
     contexts: List[Tuple[str, str, int, int, str]],
     use_llm: bool = True,
     model: Optional[str] = None,
-    timeout: int = 30,  # kept for signature compatibility; not used by CrewAI path
+    timeout: int = 30,          # kept for signature compatibility (unused here)
+    verbose: bool = False,      # let runner control verbosity
 ) -> Tuple[str, str, Optional[str]]:
     """
-    LLM-first (CrewAI) answer generation. Falls back to extractive preview if disabled or errors.
+    LLM-first answer generation via CrewAI (SeanceAgent). Falls back to extractive preview
+    if LLM is disabled or in case of unexpected errors.
     Returns: (answer_text, mode, reason)
-      - mode: "llm" or "fallback"
-      - reason: str for why we fell back (None when mode == "llm")
     """
     if not use_llm:
         return _fallback_answer(question, contexts), "fallback", "LLM disabled via flag"
 
     try:
         agent = SeanceAgent()
-        txt = agent.answer(question=question, contexts=contexts, model=model)
+        txt = agent.answer(question=question, contexts=contexts, model=model, verbose=verbose)
         if txt and txt.strip():
             return txt, "llm", None
         return _fallback_answer(question, contexts), "fallback", "LLM returned empty content"

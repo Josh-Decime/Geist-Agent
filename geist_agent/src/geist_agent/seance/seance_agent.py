@@ -62,11 +62,16 @@ class SeanceAgent:
         question: str,
         contexts: List[Tuple[str, str, int, int, str]],
         model: Optional[str] = None,
+        verbose: bool = False,
     ) -> str:
+        # honor the verbose flag for CrewAI
+        if not verbose:
+            # keep CrewAI quiet unless user asks for verbosity
+            os.environ.setdefault("CREWAI_LOG_LEVEL", "ERROR")
+
         prompt = _build_prompt(question, contexts)
         model_id, api_base = self._resolve_model(model)
 
-        # Build LLM object when available; otherwise pass model string so CrewAI picks env defaults.
         llm_obj = None
         if LLM is not None:
             llm_obj = LLM(model=model_id, base_url=api_base) if api_base else LLM(model=model_id)
@@ -75,9 +80,9 @@ class SeanceAgent:
             role="Code Answerer",
             goal="Answer questions about the repository using provided code snippets and cite file:line sources.",
             backstory="A seasoned software engineer who grounds every answer in the provided excerpts.",
-            verbose=True,
-            llm=llm_obj,     # CrewAI uses this when present
-            model=model_id,  # …and this keeps us working on versions where llm isn't required
+            verbose=verbose,   # <— important
+            llm=llm_obj,
+            model=model_id,
         )
 
         task = Task(
@@ -90,7 +95,7 @@ class SeanceAgent:
             agents=[code_answerer],
             tasks=[task],
             process=Process.sequential,
-            verbose=False,
+            verbose=verbose,   # <— important
         )
 
         result = crew.kickoff()

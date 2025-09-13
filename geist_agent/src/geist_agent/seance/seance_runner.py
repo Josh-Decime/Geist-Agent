@@ -6,6 +6,11 @@ import os
 import re
 import typer
 
+import sys
+import threading
+import time
+from contextlib import contextmanager
+
 from geist_agent.utils import ReportUtils, walk_files_compat as walk_files
 
 from .seance_index import (
@@ -17,6 +22,29 @@ from .seance_query import retrieve, generate_answer
 from .seance_session import SeanceSession
 
 app = typer.Typer(help="Ask questions about your codebase (or any supported text files).")
+
+@contextmanager
+def _spinner(label: str):
+    """Minimal CLI spinner; use only when not in verbose mode."""
+    stop = False
+    def run():
+        glyphs = "|/-\\"
+        i = 0
+        while not stop:
+            sys.stdout.write("\r" + label + " " + glyphs[i % len(glyphs)])
+            sys.stdout.flush()
+            time.sleep(0.1)
+            i += 1
+        sys.stdout.write("\r" + " " * (len(label) + 2) + "\r")
+        sys.stdout.flush()
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop = True
+        t.join()
 
 # ---------- helpers ------------------------------------------------------------
 def _default_seance_name(root: Path) -> str:
@@ -65,7 +93,8 @@ def ask(
     k: int = typer.Option(6, help="How many chunks to retrieve"),
     show_sources: bool = typer.Option(True, help="Show file:line ranges"),
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM; use extractive preview"),
-    model: str = typer.Option(None, "--model", help="LLM model id (defaults from GEIST_SEANCE_OPENAI_MODEL)"),
+    model: str = typer.Option(None, "--model", help="LLM model id (defaults from env)"),
+    verbose: bool = typer.Option(False, "--verbose", help="Show detailed agent logs"),
 ):
     root = Path(path).resolve()
     if name is None:
@@ -96,6 +125,18 @@ def ask(
             preview = "(unreadable chunk)"
         contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
         sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
+        
+        model_display = model or os.getenv("SEANCE_MODEL") or os.getenv("MODEL") or "default-model"
+
+        if verbose:
+            answer, mode, reason = generate_answer(
+                question, contexts, use_llm=not no_llm, model=model, verbose=True
+            )
+        else:
+            with _spinner(f"LLM (model={model_display}) is thinking…"):
+                answer, mode, reason = generate_answer(
+                    question, contexts, use_llm=not no_llm, model=model, verbose=False
+                )
 
     answer, mode, reason = generate_answer(
     question, contexts,
@@ -130,7 +171,9 @@ def chat(
     k: int = typer.Option(6, help="How many chunks to retrieve per turn"),
     show_sources: bool = typer.Option(True, help="Show file:line ranges under each answer"),
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM; use extractive preview"),
-    model: str = typer.Option(None, "--model", help="LLM model id (defaults from GEIST_SEANCE_OPENAI_MODEL)"),
+    model: str = typer.Option(None, "--model", help="LLM model id (defaults from env)"),
+    verbose: bool = typer.Option(False, "--verbose", help="Show detailed agent logs"),
+
 ):
 
     """
@@ -193,6 +236,18 @@ def chat(
                 preview = "(unreadable chunk)"
             contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
             sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
+
+        model_display = model or os.getenv("SEANCE_MODEL") or os.getenv("MODEL") or "default-model"
+
+        if verbose:
+            answer, mode, reason = generate_answer(
+                question, contexts, use_llm=not no_llm, model=model, verbose=True
+            )
+        else:
+            with _spinner(f"LLM (model={model_display}) is thinking…"):
+                answer, mode, reason = generate_answer(
+                    question, contexts, use_llm=not no_llm, model=model, verbose=False
+                )
 
         answer, mode, reason = generate_answer(
             question, contexts,
