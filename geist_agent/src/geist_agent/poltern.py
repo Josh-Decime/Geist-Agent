@@ -139,7 +139,8 @@ def seance_cmd(
     question: str = typer.Option(None, "--question", "-q", help="Question for mode=ask"),
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM; use extractive preview"),
     model: str = typer.Option(None, "--model", help="LLM model id (defaults from env)"),
-    verbose: bool = typer.Option(False, "--verbose")
+    verbose: bool = typer.Option(False, "--verbose"),
+    deep: bool = typer.Option(False, "--deep", help="Feed whole files (top hits) to the LLM"),
 ):
     """
     Wrapper so 'seance' behaves like our other single-entry commands.
@@ -169,6 +170,7 @@ def seance_cmd(
             no_llm=no_llm,
             model=model,
             verbose=verbose,
+            deep=deep,
         )
         return
 
@@ -181,6 +183,7 @@ def seance_cmd(
             no_llm=no_llm,
             model=model,
             verbose=verbose,
+            deep=deep,
         )
         return
 

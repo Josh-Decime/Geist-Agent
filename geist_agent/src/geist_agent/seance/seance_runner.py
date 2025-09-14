@@ -23,6 +23,51 @@ from .seance_session import SeanceSession
 
 app = typer.Typer(help="Ask questions about your codebase (or any supported text files).")
 
+# -------- env controls --------
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, "").strip() or default)
+    except Exception:
+        return default
+
+def _env_bool(name: str, default: bool) -> bool:
+    v = (os.getenv(name, "") or "").strip().lower()
+    if v in ("1", "true", "yes", "on"): return True
+    if v in ("0", "false", "no", "off"): return False
+    return default
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, "").strip() or default)
+    except Exception:
+        return default
+
+def _expand_to_deep_contexts(
+    contexts: list[tuple[str, str, int, int, str]],
+    root: Path,
+    top_n_files: int,
+) -> list[tuple[str, str, int, int, str]]:
+    """
+    Given chunk contexts, expand to whole-file contexts for the top-N unique files.
+    """
+    out: list[tuple[str, str, int, int, str]] = []
+    seen = set()
+    for _cid, file, _s, _e, _prev in contexts:
+        if file in seen:
+            continue
+        seen.add(file)
+        fp = root / file
+        try:
+            text = fp.read_text(encoding="utf-8", errors="replace")
+            total_lines = len(text.splitlines())
+            out.append(("whole:" + file, file, 1, total_lines, text))
+        except Exception:
+            out.append(("whole:" + file, file, 1, 1, "(unreadable file)"))
+        if len(out) >= top_n_files:
+            break
+    return out
+
+# --------- loading indicator --------
 @contextmanager
 def _spinner(label: str):
     """Minimal CLI spinner; use only when not in verbose mode."""
@@ -80,6 +125,10 @@ def index(
     if name is None:
         name = _default_seance_name(root)
     typer.secho(f"🧭 Indexing: {root}", fg="cyan")
+    if max_chars == 1200:  # only replace when user used default
+        max_chars = _env_int("SEANCE_MAX_CHARS", 1200)
+    if overlap == 150:
+        overlap = _env_int("SEANCE_OVERLAP", 150)
     seance_build_index(root, name, max_chars=max_chars, overlap=overlap, verbose=True)
     out = index_path(root, name)
     typer.secho(f'🪵 Index ready: "{os.fspath(out)}"', fg="green")
@@ -95,6 +144,7 @@ def ask(
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM; use extractive preview"),
     model: str = typer.Option(None, "--model", help="LLM model id (defaults from env)"),
     verbose: bool = typer.Option(False, "--verbose", help="Show detailed agent logs"),
+    deep: bool = typer.Option(False, "--deep", help="Feed whole files (top hits) to the LLM"),
 ):
     root = Path(path).resolve()
     if name is None:
@@ -106,6 +156,8 @@ def ask(
         seance_build_index(root, name, verbose=True)
 
     typer.secho(f"🔎 Asking: “{question}”", fg="cyan")
+    if k == 6:
+        k = _env_int("SEANCE_DEFAULT_K", 6)
     matches = retrieve(root, name, question, k=k)
     man = load_manifest(root, name)
     if not man:
@@ -125,24 +177,24 @@ def ask(
             preview = "(unreadable chunk)"
         contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
         sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
-        
-        model_display = model or os.getenv("SEANCE_MODEL") or os.getenv("MODEL") or "default-model"
 
-        if verbose:
+    # Optional wide context: expand top-N files to whole-file previews
+    if deep:
+        top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
+        contexts = _expand_to_deep_contexts(contexts, root, top_n)
+
+    model_display = model or os.getenv("SEANCE_MODEL") or os.getenv("MODEL") or "default-model"
+
+    # Single generate_answer call (spinner when not verbose)
+    if verbose:
+        answer, mode, reason = generate_answer(
+            question, contexts, use_llm=not no_llm, model=model, verbose=True
+        )
+    else:
+        with _spinner(f"LLM (model={model_display}) is thinking…"):
             answer, mode, reason = generate_answer(
-                question, contexts, use_llm=not no_llm, model=model, verbose=True
+                question, contexts, use_llm=not no_llm, model=model, verbose=False
             )
-        else:
-            with _spinner(f"LLM (model={model_display}) is thinking…"):
-                answer, mode, reason = generate_answer(
-                    question, contexts, use_llm=not no_llm, model=model, verbose=False
-                )
-
-    answer, mode, reason = generate_answer(
-    question, contexts,
-    use_llm=not no_llm,
-    model=model,
-    )
 
     typer.echo()
     typer.secho("━━━━━━━━━━━━━━━━ SÉANCE ━━━━━━━━━━━━━━━━", fg="magenta")
@@ -173,6 +225,7 @@ def chat(
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM; use extractive preview"),
     model: str = typer.Option(None, "--model", help="LLM model id (defaults from env)"),
     verbose: bool = typer.Option(False, "--verbose", help="Show detailed agent logs"),
+    deep: bool = typer.Option(False, "--deep", help="Feed whole files (top hits) to the LLM"),
 
 ):
 
@@ -191,6 +244,10 @@ def chat(
         typer.secho("• Bootstrapping seance (connect + index)…", fg="yellow")
         seance_connect(root, name)
         seance_build_index(root, name, verbose=True)
+
+    # If user left default k=6, allow .env override: SEANCE_DEFAULT_K
+    if k == 6:
+        k = _env_int("SEANCE_DEFAULT_K", 6)
 
     sdir = seance_dir(root, name)
     session = SeanceSession(sdir, name=name, slug=name, k=k, show_sources=show_sources)
@@ -236,7 +293,15 @@ def chat(
                 preview = "(unreadable chunk)"
             contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
             sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
+            
+        # Deep flag: CLI or REPL override
+        use_deep = deep
+        if hasattr(session, "meta") and isinstance(session.meta, dict):
+            use_deep = session.meta.get("deep", deep)
 
+        if use_deep:
+            top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
+            contexts = _expand_to_deep_contexts(contexts, root, top_n)
         model_display = model or os.getenv("SEANCE_MODEL") or os.getenv("MODEL") or "default-model"
 
         if verbose:
@@ -248,12 +313,6 @@ def chat(
                 answer, mode, reason = generate_answer(
                     question, contexts, use_llm=not no_llm, model=model, verbose=False
                 )
-
-        answer, mode, reason = generate_answer(
-            question, contexts,
-            use_llm=not no_llm,
-            model=model,
-        )
 
         typer.echo("")
         typer.secho("━━━━━━━━━━━━ RESPONSE ━━━━━━━━━━━━", fg="magenta")
@@ -282,8 +341,18 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
         typer.echo("  :q                      Quit")
         typer.echo("  :k <n>                 Set top-k retrieval")
         typer.echo("  :sources on|off        Toggle source printing")
+        typer.echo("  :deep on|off           Toggle deep (whole-file) context")
         typer.echo("  :show session          Print session folder paths")
-        
+        return
+    
+    if parts[0] == ":deep":
+        if len(parts) >= 2 and parts[1] in ("on", "off"):
+            val = parts[1] == "on"
+            session.meta = getattr(session, "meta", {})
+            session.meta["deep"] = val
+            typer.secho(f"• deep = {val}", fg="green")
+        else:
+            typer.secho("Usage: :deep on|off", fg="red")
         return
     if parts[0] == ":k":
         if len(parts) >= 2 and parts[1].isdigit():

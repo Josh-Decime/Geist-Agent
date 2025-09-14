@@ -80,7 +80,7 @@ class SeanceAgent:
             role="Code Answerer",
             goal="Answer questions about the repository using provided code snippets and cite file:line sources.",
             backstory="A seasoned software engineer who grounds every answer in the provided excerpts.",
-            verbose=verbose,   # <— important
+            verbose=verbose,   
             llm=llm_obj,
             model=model_id,
         )
@@ -95,7 +95,7 @@ class SeanceAgent:
             agents=[code_answerer],
             tasks=[task],
             process=Process.sequential,
-            verbose=verbose,   # <— important
+            verbose=verbose,   
         )
 
         result = crew.kickoff()
