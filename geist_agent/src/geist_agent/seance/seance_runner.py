@@ -155,43 +155,110 @@ def ask(
         seance_connect(root, name)
         seance_build_index(root, name, verbose=True)
 
-    typer.secho(f"🔎 Asking: “{question}”", fg="cyan")
+    # Allow .env to override defaults when the user left the defaults in place
     if k == 6:
         k = _env_int("SEANCE_DEFAULT_K", 6)
-    matches = retrieve(root, name, question, k=k)
+
+    retriever = (os.getenv("SEANCE_RETRIEVER") or "bm25").strip().lower()
+    retriever = "bm25" if retriever not in ("bm25", "jaccard") else retriever
+
+    # Candidate widening:
+    # - non-deep: widen by SEANCE_WIDEN (default 2) so we can diversify by file
+    # - deep: widen by SEANCE_DEEP_MULT (default 4) before expanding to whole files
+    widen = _env_int("SEANCE_WIDEN", 2)            # non-deep: retrieve k*widen chunks
+    deep_mult = _env_int("SEANCE_DEEP_MULT", 4)    # deep: retrieve k*deep_mult chunks
+    retrieve_k = (k * deep_mult) if deep else (k * widen)
+
+    typer.secho(f"🔎 Asking: “{question}”", fg="cyan")
+    matches = retrieve(root, name, question, k=retrieve_k)
     man = load_manifest(root, name)
     if not man:
         raise typer.Exit(code=1)
 
+    # Build contexts
     contexts, sources_out = [], []
-    for cid, _score in matches:
-        meta = man.chunks.get(cid)
-        if not meta:
-            continue
-        fp = root / meta.file
-        try:
-            lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-            slice_ = lines[meta.start_line - 1: meta.end_line]
-            preview = "\n".join(slice_)
-        except Exception:
-            preview = "(unreadable chunk)"
-        contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
-        sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
-
-    # Optional wide context: expand top-N files to whole-file previews
     if deep:
-        top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
-        contexts = _expand_to_deep_contexts(contexts, root, top_n)
+        # Expand to whole files for the top-N unique files across the wider hit list
+        top_n_files = _env_int("SEANCE_DEEP_TOP_FILES", 3)
+        tmp = []
+        seen_files = set()
+        for cid, _ in matches:
+            meta = man.chunks.get(cid)
+            if not meta:
+                continue
+            if meta.file in seen_files:
+                continue
+            seen_files.add(meta.file)
+            tmp.append((cid, meta.file, meta.start_line, meta.end_line, ""))  # placeholder preview
+            if len(tmp) >= top_n_files:
+                break
+        contexts = _expand_to_deep_contexts(tmp, root, top_n_files)
+        sources_out = [f"{file}:1-{end}" for (_cid, file, _s, end, _txt) in contexts]
+    else:
+        # Non-deep: diversify by file (on by default) and ensure we hit at least a minimum of unique files
+        diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
+        min_unique = _env_int("SEANCE_MIN_UNIQUE_FILES", max(1, min(5, k)))  # try to give several files
 
+        seen_files = set()
+        for cid, _score in matches:
+            meta = man.chunks.get(cid)
+            if not meta:
+                continue
+            if diversify and meta.file in seen_files:
+                continue
+            seen_files.add(meta.file)
+            fp = root / meta.file
+            try:
+                lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+                slice_ = lines[meta.start_line - 1: meta.end_line]
+                preview = "\n".join(slice_)
+            except Exception:
+                preview = "(unreadable chunk)"
+            contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
+            sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
+            # stop when we have k contexts AND we've satisfied the uniqueness minimum
+            if len(contexts) >= k and len(seen_files) >= min_unique:
+                break
+
+        # If we still didn't reach min_unique (e.g., matches were dominated by one file),
+        # take additional chunks from new files further down the list:
+        if len(seen_files) < min_unique:
+            for cid, _score in matches:
+                if len(seen_files) >= min_unique or len(contexts) >= k:
+                    break
+                meta = man.chunks.get(cid)
+                if not meta or (diversify and meta.file in seen_files):
+                    continue
+                seen_files.add(meta.file)
+                fp = root / meta.file
+                try:
+                    lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+                    slice_ = lines[meta.start_line - 1: meta.end_line]
+                    preview = "\n".join(slice_)
+                except Exception:
+                    preview = "(unreadable chunk)"
+                contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
+                sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
+
+    # --- retrieval feedback (shows in terminal before the spinner) ------------
+    if _env_bool("SEANCE_RETRIEVAL_LOG", True):
+        unique_files = len({f for (_cid, f, _s, _e, _txt) in contexts})
+        typer.secho(
+            f"• Retrieval: {('DEEP' if deep else retriever.upper())} "
+            f"| hits={len(matches)} | contexts={len(contexts)} | files={unique_files}",
+            fg="blue",
+        )
+
+    # Thinking indicator shows which retrieval mode was used
+    mode_label = "DEEP" if deep else retriever.upper()
     model_display = model or os.getenv("SEANCE_MODEL") or os.getenv("MODEL") or "default-model"
 
-    # Single generate_answer call (spinner when not verbose)
     if verbose:
         answer, mode, reason = generate_answer(
             question, contexts, use_llm=not no_llm, model=model, verbose=True
         )
     else:
-        with _spinner(f"LLM (model={model_display}) is thinking…"):
+        with _spinner(f"{mode_label} | LLM (model={model_display}) is thinking…"):
             answer, mode, reason = generate_answer(
                 question, contexts, use_llm=not no_llm, model=model, verbose=False
             )
@@ -201,10 +268,9 @@ def ask(
     typer.echo(answer)
     typer.secho("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", fg="magenta")
 
-    # NEW: show LLM vs fallback status with reason/model
     typer.secho(
         f"• Answer mode: {'LLM' if mode=='llm' else 'fallback'}"
-        + (f" (model={model or os.getenv('GEIST_SEANCE_OPENAI_MODEL','gpt-4o-mini')})" if mode=='llm' else (f" — {reason}" if reason else "")),
+        + (f" (model={model_display})" if mode=='llm' else (f" — {reason}" if reason else "")),
         fg=("green" if mode == "llm" else "yellow"),
     )
 
@@ -213,7 +279,6 @@ def ask(
         typer.secho("Sources:", fg="yellow")
         for s in sources_out:
             typer.echo(f"  • {s}")
-
 
 # ───────────────────────────────────── chat ────────────────────────────────────
 @app.command("chat")
@@ -274,45 +339,133 @@ def chat(
         if not question.strip():
             continue
 
+        # --- inline --deep toggle per question --------------------------------
+        q_tokens = question.split()
+        q_deep = "--deep" in q_tokens
+        if q_deep:
+            q_tokens = [t for t in q_tokens if t != "--deep"]
+            question = " ".join(q_tokens).strip()
+            # If the user typed only --deep, treat it like a toggle and skip this turn
+            if not question:
+                session.meta = getattr(session, "meta", {})
+                session.meta["deep"] = True
+                typer.secho("• deep = True (will apply to next question)", fg="green")
+                continue
+
+
         session.append_message("user", question)
         typer.secho("⋯ retrieving context …", fg="blue")
-        matches = retrieve(root, name, question, k=session.info.k)
+
+        # Decide whether deep is in effect this turn:
+        # 1) CLI flag --deep
+        # 2) REPL toggle :deep on|off (session.meta["deep"])
+        # 3) inline --deep for this message
+        use_deep = deep
+        if hasattr(session, "meta") and isinstance(session.meta, dict):
+            use_deep = session.meta.get("deep", use_deep)
+        if q_deep:
+            use_deep = True
+
+        # Which retriever?
+        retriever = (os.getenv("SEANCE_RETRIEVER") or "bm25").strip().lower()
+        retriever = "bm25" if retriever not in ("bm25", "jaccard") else retriever
+
+        # Candidate widening
+        widen = _env_int("SEANCE_WIDEN", 2)           # non-deep widening
+        deep_mult = _env_int("SEANCE_DEEP_MULT", 4)   # deep widening
+        retrieve_k = (session.info.k * deep_mult) if use_deep else (session.info.k * widen)
+
+        matches = retrieve(root, name, question, k=retrieve_k)
+
 
         man = load_manifest(root, name)  # refresh
         contexts, sources_out = [], []
-        for cid, _score in matches:
-            meta = man.chunks.get(cid)
-            if not meta:
-                continue
-            fp = root / meta.file
-            try:
-                lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-                slice_ = lines[meta.start_line - 1: meta.end_line]
-                preview = "\n".join(slice_)
-            except Exception:
-                preview = "(unreadable chunk)"
-            contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
-            sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
-            
-        # Deep flag: CLI or REPL override
-        use_deep = deep
-        if hasattr(session, "meta") and isinstance(session.meta, dict):
-            use_deep = session.meta.get("deep", deep)
 
         if use_deep:
+            # Top-N unique files from the wider candidate pool
             top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
-            contexts = _expand_to_deep_contexts(contexts, root, top_n)
+            tmp = []
+            seen_files = set()
+            for cid, _ in matches:
+                meta = man.chunks.get(cid)
+                if not meta:
+                    continue
+                if meta.file in seen_files:
+                    continue
+                seen_files.add(meta.file)
+                tmp.append((cid, meta.file, meta.start_line, meta.end_line, ""))  # placeholder
+                if len(tmp) >= top_n:
+                    break
+            contexts = _expand_to_deep_contexts(tmp, root, top_n)
+            sources_out = [f"{file}:1-{end}" for (_cid, file, _s, end, _txt) in contexts]
+        else:
+            diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
+            min_unique = _env_int("SEANCE_MIN_UNIQUE_FILES", max(1, min(5, session.info.k)))
+
+            seen_files = set()
+            for cid, _score in matches:
+                meta = man.chunks.get(cid)
+                if not meta:
+                    continue
+                if diversify and meta.file in seen_files:
+                    continue
+                seen_files.add(meta.file)
+                fp = root / meta.file
+                try:
+                    lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+                    slice_ = lines[meta.start_line - 1: meta.end_line]
+                    preview = "\n".join(slice_)
+                except Exception:
+                    preview = "(unreadable chunk)"
+                contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
+                sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
+                # stop when we have k contexts AND we've hit the uniqueness minimum
+                if len(contexts) >= session.info.k and len(seen_files) >= min_unique:
+                    break
+
+            # If we didn't reach min_unique, sweep again to grab new files farther down:
+            if len(seen_files) < min_unique:
+                for cid, _score in matches:
+                    if len(seen_files) >= min_unique or len(contexts) >= session.info.k:
+                        break
+                    meta = man.chunks.get(cid)
+                    if not meta or (diversify and meta.file in seen_files):
+                        continue
+                    seen_files.add(meta.file)
+                    fp = root / meta.file
+                    try:
+                        lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+                        slice_ = lines[meta.start_line - 1: meta.end_line]
+                        preview = "\n".join(slice_)
+                    except Exception:
+                        preview = "(unreadable chunk)"
+                    contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
+                    sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
+
+
+        # Spinner shows which retrieval path ran
+        mode_label = "DEEP" if use_deep else retriever.upper()
         model_display = model or os.getenv("SEANCE_MODEL") or os.getenv("MODEL") or "default-model"
+
+        # --- retrieval feedback (shows in terminal before the spinner) --------
+        if _env_bool("SEANCE_RETRIEVAL_LOG", True):
+            unique_files = len({f for (_cid, f, _s, _e, _txt) in contexts})
+            typer.secho(
+                f"• Retrieval: {mode_label} | hits={len(matches)} | contexts={len(contexts)} | files={unique_files}",
+                fg="blue",
+            )
 
         if verbose:
             answer, mode, reason = generate_answer(
                 question, contexts, use_llm=not no_llm, model=model, verbose=True
             )
         else:
-            with _spinner(f"LLM (model={model_display}) is thinking…"):
+            with _spinner(f"{mode_label} | LLM (model={model_display}) is thinking…"):
                 answer, mode, reason = generate_answer(
                     question, contexts, use_llm=not no_llm, model=model, verbose=False
                 )
+
+
 
         typer.echo("")
         typer.secho("━━━━━━━━━━━━ RESPONSE ━━━━━━━━━━━━", fg="magenta")
