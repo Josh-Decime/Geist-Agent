@@ -149,11 +149,14 @@ def ask(
     root = Path(path).resolve()
     if name is None:
         name = _default_seance_name(root)
-    # if first-time use, bootstrap
-    if not load_manifest(root, name) or not index_path(root, name).exists():
-        typer.secho("• Bootstrapping seance (connect + index)…", fg="yellow")
-        seance_connect(root, name)
-        seance_build_index(root, name, verbose=True)
+    # Always (re)connect + (re)index at the start of each run
+    typer.secho("• Preparing index (connect + index)…", fg="yellow")
+    seance_connect(root, name)
+    idx_verbose = _env_bool("SEANCE_INDEX_VERBOSE", True)
+    max_chars_env = _env_int("SEANCE_MAX_CHARS", 1200)
+    overlap_env   = _env_int("SEANCE_OVERLAP", 150)
+    seance_build_index(root, name, max_chars=max_chars_env, overlap=overlap_env, verbose=idx_verbose)
+
 
     # Allow .env to override defaults when the user left the defaults in place
     if k == 6:
@@ -302,13 +305,14 @@ def chat(
     if name is None:
         name = _default_seance_name(root)
 
-    # Bootstrap if needed
-    need_connect = not load_manifest(root, name)
-    need_index = not index_path(root, name).exists()
-    if need_connect or need_index:
-        typer.secho("• Bootstrapping seance (connect + index)…", fg="yellow")
-        seance_connect(root, name)
-        seance_build_index(root, name, verbose=True)
+    # Always (re)connect + (re)index once when chat starts
+    typer.secho("• Preparing index (connect + index)…", fg="yellow")
+    seance_connect(root, name)
+    idx_verbose = _env_bool("SEANCE_INDEX_VERBOSE", True)
+    max_chars_env = _env_int("SEANCE_MAX_CHARS", 1200)
+    overlap_env   = _env_int("SEANCE_OVERLAP", 150)
+    seance_build_index(root, name, max_chars=max_chars_env, overlap=overlap_env, verbose=idx_verbose)
+
 
     # If user left default k=6, allow .env override: SEANCE_DEFAULT_K
     if k == 6:
@@ -472,10 +476,9 @@ def chat(
         typer.echo(answer)
         typer.secho("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", fg="magenta")
 
-        # NEW: show LLM vs fallback status with reason/model
         typer.secho(
             f"• Answer mode: {'LLM' if mode=='llm' else 'fallback'}"
-            + (f" (model={model or os.getenv('GEIST_SEANCE_OPENAI_MODEL','gpt-4o-mini')})" if mode=='llm' else (f" — {reason}" if reason else "")),
+            + (f" (model={model_display})" if mode=='llm' else (f" — {reason}" if reason else "")),
             fg=("green" if mode == "llm" else "yellow"),
         )
 
