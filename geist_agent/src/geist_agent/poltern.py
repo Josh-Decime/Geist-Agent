@@ -115,17 +115,15 @@ def ward_cmd(
         "Modes:\n"
         "  connect   Initialize .geist/seance/<name>/ (no indexing yet)\n"
         "  index     Build or update the index incrementally\n"
-        "  ask       One-shot Q&A with sources\n"
         "  chat      Interactive REPL; saves a transcript\n\n"
         "Examples:\n"
         "  poltergeist seance connect --path . --name app-core\n"
         "  poltergeist seance index --name app-core\n"
-        "  poltergeist seance ask --question \"Where are Typer subcommands registered?\" --name app-core -k 8\n"
         "  poltergeist seance chat --name app-core\n"
     ),
 )
 def seance_cmd(
-    mode: str = typer.Argument("chat", metavar="MODE", help="connect | index | ask | chat (default: chat)"),
+    mode: str = typer.Argument("chat", metavar="MODE", help="connect | index | chat (default: chat)"),
     # shared
     path: str = typer.Option(".", "--path", "-p", help="Root path of the filebase"),
     name: str = typer.Option(None, "--name", "-n", help="Seance name (default: derived from folder)"),
@@ -135,8 +133,7 @@ def seance_cmd(
     # index knobs
     max_chars: int = typer.Option(1200, "--max-chars", help="Max chars per chunk (index)"),
     overlap: int = typer.Option(150, "--overlap", help="Chunk overlap in chars (index)"),
-    # ask-only
-    question: str = typer.Option(None, "--question", "-q", help="Question for mode=ask"),
+    # chatting
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM; use extractive preview"),
     model: str = typer.Option(None, "--model", help="LLM model id (defaults from env)"),
     verbose: bool = typer.Option(False, "--verbose"),
@@ -158,22 +155,6 @@ def seance_cmd(
         seance_mod.index(path=path, name=name, max_chars=max_chars, overlap=overlap)
         return
 
-    if mode == "ask":
-        if not question:
-            raise typer.BadParameter("Provide --question (or use mode=chat for an interactive session).")
-        seance_mod.ask(
-            question=question,
-            path=path,
-            name=name,
-            k=k,
-            show_sources=show_sources,
-            no_llm=no_llm,
-            model=model,
-            verbose=verbose,
-            deep=deep,
-        )
-        return
-
     if mode == "chat":
         seance_mod.chat(
             path=path,
@@ -188,8 +169,6 @@ def seance_cmd(
         return
 
     raise typer.BadParameter("MODE must be one of: connect, index, ask, chat")
-
-
 
 # ---------- entry ----------
 def main():
