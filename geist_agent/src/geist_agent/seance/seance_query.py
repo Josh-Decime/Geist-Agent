@@ -102,25 +102,7 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
     ranked.sort(key=lambda x: x[1], reverse=True)
     return ranked[:k]
 
-
 # ─────────────────────────────── Answering ─────────────────────────────────────
-
-def _build_prompt(question: str, contexts: List[Tuple[str, str, int, int, str]]) -> str:
-    blocks = []
-    for (_cid, file, s, e, preview) in contexts:
-        blocks.append(f"### {file}:{s}-{e}\n{preview}")
-    return textwrap.dedent(f"""
-    You are an expert software assistant. Answer the user's question using ONLY the provided code excerpts.
-    Always cite the files and line ranges you used, like: file.py:10-35.
-
-    Question:
-    {question}
-
-    Context:
-    {'\n\n'.join(blocks)}
-
-    Return a concise answer (bullets okay) followed by a "Sources:" section listing the citations you used.
-    """).strip()
 
 def generate_answer(
     question: str,

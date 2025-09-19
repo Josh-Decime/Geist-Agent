@@ -21,9 +21,12 @@ def _build_prompt(question: str, contexts: List[Tuple[str, str, int, int, str]])
     blocks = []
     for (_cid, file, s, e, preview) in contexts:
         blocks.append(f"### {file}:{s}-{e}\n{preview}")
+
     return textwrap.dedent(f"""
-    You are an expert software assistant. Answer the user's question using ONLY the provided code excerpts.
-    Always cite the files and line ranges you used, like: file.py:10-35.
+    You are an expert software assistant. You must answer ONLY using the provided code excerpts.
+    If the excerpts are insufficient or off-topic, say exactly:
+    "I don’t have enough on-topic context to answer. I would need: <list missing info>."
+    Do NOT invent details. Do NOT change the question.
 
     Question:
     {question}
@@ -31,8 +34,12 @@ def _build_prompt(question: str, contexts: List[Tuple[str, str, int, int, str]])
     Context:
     {'\n\n'.join(blocks)}
 
-    Return a concise answer (bullets okay) followed by a "Sources:" section listing the citations you used.
+    Tasks:
+    1) Restate the question in one short sentence to confirm scope.
+    2) Provide a precise answer grounded in the excerpts above.
+    3) End with a "Sources:" section listing file:line citations you used.
     """).strip()
+
 
 
 class SeanceAgent:

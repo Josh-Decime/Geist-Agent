@@ -20,6 +20,7 @@ from .seance_index import (
 )
 from .seance_query import retrieve, generate_answer
 from .seance_session import SeanceSession
+from .seance_common import tokenize
 
 app = typer.Typer(help="Ask questions about your codebase (or any supported text files).")
 
@@ -48,23 +49,78 @@ def _expand_to_deep_contexts(
     top_n_files: int,
 ) -> list[tuple[str, str, int, int, str]]:
     """
-    Given chunk contexts, expand to whole-file contexts for the top-N unique files.
+    Build deep contexts by expanding around the *most relevant chunk window*
+    for each top file, instead of dumping entire files.
+
+    Env knobs:
+      SEANCE_DEEP_WINDOW_LINES   (default 120)    -> +/- lines around best chunk
+      SEANCE_DEEP_MAX_FILE_CHARS (default 4000)   -> cap text per file
+      SEANCE_DEEP_MIN_OVERLAP    (default 1)      -> skip if window barely overlaps
     """
+    def _tokenize(s: str) -> set[str]:
+        return set(re.findall(r"[A-Za-z0-9_]+", s.lower()))
+
+    # read env knobs (fail-safe defaults)
+    try:
+        window_lines = int(os.getenv("SEANCE_DEEP_WINDOW_LINES", "120"))
+    except Exception:
+        window_lines = 120
+    try:
+        max_file_chars = int(os.getenv("SEANCE_DEEP_MAX_FILE_CHARS", "4000"))
+    except Exception:
+        max_file_chars = 4000
+    try:
+        min_overlap = int(os.getenv("SEANCE_DEEP_MIN_OVERLAP", "1"))
+    except Exception:
+        min_overlap = 1
+
     out: list[tuple[str, str, int, int, str]] = []
-    seen = set()
-    for _cid, file, _s, _e, _prev in contexts:
-        if file in seen:
+    seen_files: set[str] = set()
+
+    for (_cid, file, s, e, _prev) in contexts:
+        if file in seen_files:
             continue
-        seen.add(file)
+        seen_files.add(file)
+
         fp = root / file
         try:
-            text = fp.read_text(encoding="utf-8", errors="replace")
-            total_lines = len(text.splitlines())
-            out.append(("whole:" + file, file, 1, total_lines, text))
+            lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
-            out.append(("whole:" + file, file, 1, 1, "(unreadable file)"))
+            out.append((f"win:{file}", file, 1, 1, "(unreadable file)"))
+            if len(out) >= top_n_files:
+                break
+            continue
+
+        total = len(lines)
+        # initial window centered on best chunk span
+        start = max(1, s - window_lines)
+        end   = min(total, e + window_lines)
+        text  = "\n".join(lines[start - 1:end])
+
+        # cap by character budget for this file
+        if len(text) > max_file_chars:
+            text = text[:max_file_chars]
+
+        # lightweight overlap gate: does window actually relate to the chunk?
+        chunk_tokens = _tokenize("\n".join(lines[s - 1:e]))
+        win_tokens   = _tokenize(text)
+        if len(chunk_tokens & win_tokens) < min_overlap:
+            # try one wider pass
+            alt_start = max(1, start - window_lines // 2)
+            alt_end   = min(total, end + window_lines // 2)
+            alt_text  = "\n".join(lines[alt_start - 1:alt_end])
+            if len(alt_text) > max_file_chars:
+                alt_text = alt_text[:max_file_chars]
+            if len(chunk_tokens & _tokenize(alt_text)) >= min_overlap:
+                start, end, text = alt_start, alt_end, alt_text
+            else:
+                # still too weak; skip this file
+                continue
+
+        out.append((f"win:{file}", file, start, end, text))
         if len(out) >= top_n_files:
             break
+
     return out
 
 # --------- loading indicator --------
@@ -236,23 +292,35 @@ def chat(
         man = load_manifest(root, name)  # refresh
         contexts, sources_out = [], []
 
+        # --- SEANCE DEEP: aggregate by file & expand best windows ---
         if use_deep:
-            # Top-N unique files from the wider candidate pool
             top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
-            tmp = []
-            seen_files = set()
-            for cid, _ in matches:
+
+            # 1) sum candidate scores per file, and remember the best chunk per file
+            file_scores: dict[str, float] = {}
+            best_window: dict[str, tuple[str, int, int, float]] = {}
+
+            for cid, score in matches:
                 meta = man.chunks.get(cid)
                 if not meta:
                     continue
-                if meta.file in seen_files:
-                    continue
-                seen_files.add(meta.file)
-                tmp.append((cid, meta.file, meta.start_line, meta.end_line, ""))  # placeholder
-                if len(tmp) >= top_n:
-                    break
+                file_scores[meta.file] = file_scores.get(meta.file, 0.0) + float(score)
+                prev = best_window.get(meta.file)
+                if prev is None or score > prev[3]:
+                    best_window[meta.file] = (cid, meta.start_line, meta.end_line, float(score))
+
+            # 2) choose top-N files by total relevance
+            ranked_files = sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+
+            # 3) prepare windows for expander (use each file's best chunk span)
+            tmp = []
+            for file, _tot in ranked_files:
+                cid, s, e, _best = best_window[file]
+                tmp.append((cid, file, s, e, ""))  # preview filled by expander
+
+            # 4) expand those windows (bounded slices, not whole files)
             contexts = _expand_to_deep_contexts(tmp, root, top_n)
-            sources_out = [f"{file}:1-{end}" for (_cid, file, _s, end, _txt) in contexts]
+            sources_out = [f"{file}:{s}-{e}" for (_cid, file, s, e, _txt) in contexts]
         else:
             diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
             min_unique = _env_int("SEANCE_MIN_UNIQUE_FILES", max(1, min(5, session.info.k)))
