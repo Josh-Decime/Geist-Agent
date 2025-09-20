@@ -168,7 +168,7 @@ def seance_cmd(
         )
         return
 
-    raise typer.BadParameter("MODE must be one of: connect, index, ask, chat")
+    raise typer.BadParameter("MODE must be one of: connect, index, chat")
 
 # ---------- entry ----------
 def main():
