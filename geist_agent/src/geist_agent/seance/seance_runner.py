@@ -292,109 +292,91 @@ def chat(
         man = load_manifest(root, name)  # refresh
         contexts, sources_out = [], []
 
-        # --- SEANCE DEEP: multi-file, multi-window diversification -------------
+        # --- SEANCE DEEP: anchors (top hits) + widen to more files -------------
         if use_deep:
-            deep_files        = _env_int("SEANCE_DEEP_FILES", max(8, session.info.k * 3))
-            windows_per_file  = _env_int("SEANCE_DEEP_WINDOWS_PER_FILE", 2)
-            window_lines      = _env_int("SEANCE_DEEP_WINDOW_LINES", 120)
-            max_contexts_default = deep_files * max(1, windows_per_file)
-            max_contexts      = _env_int("SEANCE_DEEP_MAX_CONTEXTS", max_contexts_default)
-            diversify_dirs    = _env_bool("SEANCE_DIVERSIFY_DIRS", True)
-            dir_quota         = _env_int("SEANCE_DEEP_DIR_QUOTA", max(1, deep_files // 4))
+            # Keep the strongest hits (anchors) so we don't miss direct answers,
+            # then diversify across additional top files with bounded windows.
 
-            # 1) collect all hits per file
-            file_hits: dict[str, list[tuple[float, str]]] = {}
-            for cid, score in matches:
+            # Tunables (env):
+            #   SEANCE_DEEP_TOP_FILES   -> how many *additional* files to widen into (default: 3)
+            #   SEANCE_DEEP_ANCHORS     -> top-N strongest hits to ALWAYS include (default: 3)
+            #   SEANCE_DEEP_WINDOW_LINES-> window size for anchor slices (default: 120)
+            #   SEANCE_DEEP_MAX_CONTEXTS-> hard cap on total contexts (default: 24)
+
+            top_n        = _env_int("SEANCE_DEEP_TOP_FILES", 3)
+            anchors_n    = _env_int("SEANCE_DEEP_ANCHORS", 3)
+            window_lines = _env_int("SEANCE_DEEP_WINDOW_LINES", 120)
+            max_ctx      = _env_int("SEANCE_DEEP_MAX_CONTEXTS", 24)
+
+            # 0) ANCHORS: include top-N exact hits as windows first
+            half = max(1, window_lines // 2)
+            lines_cache: dict[str, list[str]] = {}
+            anchor_files: set[str] = set()
+
+            for cid, _score in sorted(matches, key=lambda x: x[1], reverse=True)[:anchors_n]:
                 meta = man.chunks.get(cid)
                 if not meta:
                     continue
-                file_hits.setdefault(meta.file, []).append((float(score), cid))
+                f = meta.file
+                fp = root / f
+                try:
+                    if f not in lines_cache:
+                        lines_cache[f] = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+                    lines = lines_cache[f]
+                    total = len(lines)
+                    mid = (meta.start_line + meta.end_line) // 2
+                    s = max(1, mid - half)
+                    e = min(total, s + window_lines - 1)
+                    s = max(1, e - window_lines + 1)  # adjust if clipped
+                    preview = "\n".join(lines[s - 1 : e])
+                except Exception:
+                    # if unreadable, at least include a stub so the source is visible
+                    s, e, preview = meta.start_line, meta.end_line, "(unreadable file)"
 
-            if not file_hits:
-                contexts = []
-                sources_out = []
+                contexts.append((cid, f, s, e, preview))
+                sources_out.append(f"{f}:{s}-{e}")
+                anchor_files.add(f)
 
+                if len(contexts) >= max_ctx:
+                    break
+
+            # Bail early if we already filled the context budget
+            if len(contexts) >= max_ctx:
+                pass
             else:
-                # 2) rank files by aggregate strength (tie-breaker: best single hit)
-                def file_rank_key(f: str) -> tuple[float, float]:
-                    scores = [s for s, _ in file_hits[f]]
-                    return (sum(scores), max(scores) if scores else 0.0)
+                # 1) score files and remember best window per file
+                file_scores: dict[str, float] = {}
+                best_window: dict[str, tuple[str, int, int, float]] = {}
 
-                ranked_files_all = sorted(file_hits.keys(), key=file_rank_key, reverse=True)
-
-                # 3) enforce directory diversification (optional)
-                chosen_files: list[str] = []
-                dir_counts: dict[str, int] = {}
-                for f in ranked_files_all:
-                    if len(chosen_files) >= deep_files:
-                        break
-                    top_dir = f.split("/", 1)[0] if "/" in f else f
-                    if diversify_dirs:
-                        if dir_counts.get(top_dir, 0) >= dir_quota:
-                            continue
-                        dir_counts[top_dir] = dir_counts.get(top_dir, 0) + 1
-                    chosen_files.append(f)
-
-                # 4) build windows around top hits per file (avoid overlapping windows in same file)
-                contexts = []
-                sources_out = []
-                total_added = 0
-
-                for f in chosen_files:
-                    if total_added >= max_contexts:
-                        break
-
-                    fp = root / f
-                    try:
-                        lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-                        total_lines = len(lines)
-                    except Exception:
-                        # unreadable file → include stub so user sees it surfaced
-                        contexts.append((f"stub:{f}", f, 1, 1, "(unreadable file)"))
-                        sources_out.append(f"{f}:1-1")
-                        total_added += 1
+                for cid, score in matches:
+                    meta = man.chunks.get(cid)
+                    if not meta:
                         continue
+                    file_scores[meta.file] = file_scores.get(meta.file, 0.0) + float(score)
+                    prev = best_window.get(meta.file)
+                    if prev is None or score > prev[3]:
+                        best_window[meta.file] = (cid, meta.start_line, meta.end_line, float(score))
 
-                    # strongest hits for this file
-                    hits = sorted(file_hits[f], key=lambda x: x[0], reverse=True)
+                # 2) choose top files by total relevance, but SKIP files already used as anchors
+                ranked_files = [
+                    kv for kv in sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)
+                    if kv[0] not in anchor_files
+                ][:top_n]
 
-                    # pick up to N windows with minimal overlap (diversity within file)
-                    selected = 0
-                    used_ranges: list[tuple[int, int]] = []
-                    half = max(1, window_lines // 2)
+                # 3) expand those files into bounded windows via the helper
+                seed = []
+                for file, _tot in ranked_files:
+                    cid, s, e, _best = best_window[file]
+                    seed.append((cid, file, s, e, ""))  # preview filled by expander
 
-                    for _score, cid in hits:
-                        if selected >= max(1, windows_per_file) or total_added >= max_contexts:
-                            break
-                        meta = man.chunks.get(cid)
-                        if not meta:
-                            continue
+                expanded = _expand_to_deep_contexts(seed, root, top_n)
 
-                        # center the window at the middle of the chunk span
-                        mid = (meta.start_line + meta.end_line) // 2
-                        s = max(1, mid - half)
-                        e = min(total_lines, s + window_lines - 1)
-                        # adjust start if clipped at file end
-                        s = max(1, e - window_lines + 1)
-
-                        # skip if overlaps heavily with a previously chosen window in this file
-                        overlaps = False
-                        for (us, ue) in used_ranges:
-                            # consider overlapping if more than 30% of window_lines overlaps
-                            overlap_len = max(0, min(e, ue) - max(s, us) + 1)
-                            if overlap_len >= int(window_lines * 0.3):
-                                overlaps = True
-                                break
-                        if overlaps:
-                            continue
-
-                        # capture preview
-                        preview = "\n".join(lines[s - 1 : e])
-                        contexts.append((cid, f, s, e, preview))
-                        sources_out.append(f"{f}:{s}-{e}")
-                        used_ranges.append((s, e))
-                        selected += 1
-                        total_added += 1
+                # 4) append expanded windows, respecting the context cap
+                for (_cid, file, s, e, txt) in expanded:
+                    if len(contexts) >= max_ctx:
+                        break
+                    contexts.append((_cid, file, s, e, txt))
+                    sources_out.append(f"{file}:{s}-{e}")
 
         else:
             diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
