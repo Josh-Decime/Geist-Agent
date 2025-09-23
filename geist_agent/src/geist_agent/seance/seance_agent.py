@@ -1,4 +1,4 @@
-# === FILE: src/geist_agent/seance/seance_agent.py ==============================
+# src/geist_agent/seance/seance_agent.py 
 from __future__ import annotations
 
 from typing import List, Tuple, Optional

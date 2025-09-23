@@ -1,4 +1,4 @@
-# === FILE: src/geist_agent/seance/seance_runner.py =============================
+# src/geist_agent/seance/seance_runner.py
 from __future__ import annotations
 
 from pathlib import Path

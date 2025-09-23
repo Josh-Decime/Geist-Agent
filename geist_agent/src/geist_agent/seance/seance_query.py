@@ -1,4 +1,4 @@
-# === FILE: seance_query.py ====================================================
+# src/geist_agent/seance/seance_query.py 
 from __future__ import annotations
 
 from pathlib import Path

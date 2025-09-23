@@ -1,4 +1,4 @@
-# === FILE: seance_session.py ==================================================
+# src/geist_agent/seance/seance_session.py 
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict

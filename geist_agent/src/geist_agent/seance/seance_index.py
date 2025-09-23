@@ -1,4 +1,4 @@
-# === FILE: seance_index.py ====================================================
+# src/geist_agent/seance/seance_index.py 
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
