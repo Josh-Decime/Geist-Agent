@@ -304,35 +304,39 @@ def chat(
         man = load_manifest(root, name)  # refresh
         contexts, sources_out = [], []
 
-        # --- SEANCE DEEP: aggregate by file & expand best windows ---
+        # --- SEANCE DEEP: hit-centric fan-out across many files ---
         if use_deep:
-            top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
+            window_lines = _env_int("SEANCE_DEEP_WINDOW_LINES", 90)
+            max_contexts = _env_int("SEANCE_DEEP_MAX_CONTEXTS", 24)
+            per_file     = _env_int("SEANCE_DEEP_HITS_PER_FILE", 2)
 
-            # 1) sum candidate scores per file, and remember the best chunk per file
-            file_scores: dict[str, float] = {}
-            best_window: dict[str, tuple[str, int, int, float]] = {}
-
-            for cid, score in matches:
+            contexts = []
+            per_file_counts: dict[str, int] = {}
+            for cid, _score in matches:
+                if len(contexts) >= max_contexts:
+                    break
                 meta = man.chunks.get(cid)
                 if not meta:
                     continue
-                file_scores[meta.file] = file_scores.get(meta.file, 0.0) + float(score)
-                prev = best_window.get(meta.file)
-                if prev is None or score > prev[3]:
-                    best_window[meta.file] = (cid, meta.start_line, meta.end_line, float(score))
+                cnt = per_file_counts.get(meta.file, 0)
+                if cnt >= per_file:
+                    continue
 
-            # 2) choose top-N files by total relevance
-            ranked_files = sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+                fp = root / meta.file
+                try:
+                    lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+                    start = max(1, meta.start_line - window_lines)
+                    end   = min(len(lines), meta.end_line + window_lines)
+                    preview = "\n".join(lines[start - 1:end])
+                except Exception:
+                    start = end = 1
+                    preview = "(unreadable file)"
 
-            # 3) prepare windows for expander (use each file's best chunk span)
-            tmp = []
-            for file, _tot in ranked_files:
-                cid, s, e, _best = best_window[file]
-                tmp.append((cid, file, s, e, ""))  # preview filled by expander
+                contexts.append((cid, meta.file, start, end, preview))
+                per_file_counts[meta.file] = cnt + 1
 
-            # 4) expand those windows (bounded slices, not whole files)
-            contexts = _expand_to_deep_contexts(tmp, root, top_n)
-            sources_out = [f"{file}:{s}-{e}" for (_cid, file, s, e, _txt) in contexts]
+            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _txt) in contexts]
+
         else:
             diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
             min_unique = _env_int("SEANCE_MIN_UNIQUE_FILES", max(1, min(5, session.info.k)))
@@ -377,6 +381,47 @@ def chat(
                     contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
                     sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
 
+        # --- Post-filter / rerank contexts by query-term hits & demote docs -------------
+        def _qterms(q: str) -> list[str]:
+            raw = re.findall(r"[A-Za-z0-9_]+", q.lower())
+            stop = set((os.getenv("SEANCE_STOPWORDS") or
+                        "list,lists,all,that,those,these,which,whose,what,where,why,how,"
+                        "use,uses,using,to,for,of,the,a,an,and,or,subcommands,command,commands,"
+                        "name,names,named,report,reports").split(","))
+            return [t for t in raw if len(t) >= 3 and t not in stop]
+
+        def _is_doc(path: str) -> bool:
+            return os.path.splitext(path)[1].lower() in {".md", ".rst", ".txt", ".adoc"}
+
+        qterms = _qterms(question)
+        min_hits = _env_int("SEANCE_MIN_QHITS", 1)
+        demote_docs = _env_bool("SEANCE_DEMOTE_DOCS", True)
+
+        def _hitcount(txt: str) -> int:
+            tl = txt.lower()
+            return sum(tl.count(t) for t in qterms) if qterms else 0
+
+        if contexts:
+            scored = []
+            for (cid, f, s, e, txt) in contexts:
+                h = _hitcount(txt)
+                scored.append((h, _is_doc(f), cid, f, s, e, txt))
+
+            # If any windows have enough hits, keep only those (don’t go empty if none).
+            if qterms and any(h >= min_hits for (h, _doc, *_rest) in scored):
+                scored = [row for row in scored if row[0] >= min_hits]
+
+            # Sort: more hits first; optionally demote docs on ties.
+            if demote_docs:
+                scored.sort(key=lambda r: (r[0], -int(r[1])), reverse=True)
+            else:
+                scored.sort(key=lambda r: r[0], reverse=True)
+
+            cap = _env_int("SEANCE_DEEP_MAX_CONTEXTS", 24) if use_deep else session.info.k
+            scored = scored[:cap]
+            contexts = [(cid, f, s, e, txt) for (_h, _doc, cid, f, s, e, txt) in scored]
+            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _txt) in contexts]
+
 
         # Spinner shows which retrieval path ran
         mode_label = "DEEP" if use_deep else retriever.upper()
@@ -389,6 +434,10 @@ def chat(
                 f"• Retrieval: {mode_label} | hits={len(matches)} | contexts={len(contexts)} | files={unique_files}",
                 fg="blue",
             )
+        if _env_bool("SEANCE_RETRIEVAL_LOG", True) and qterms:
+            top_hit = max((txt.lower().count(qt) for (_cid,_f,_s,_e,txt) in contexts for qt in qterms), default=0)
+            typer.secho(f"• QTerm filter: terms={qterms} min_hits={min_hits} top_hit={top_hit}", fg="blue")
+
 
         if active_verbose:
             answer, mode, reason = generate_answer(
