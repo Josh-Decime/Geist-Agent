@@ -21,18 +21,12 @@ def _build_prompt(question: str, contexts: List[Tuple[str, str, int, int, str]])
     blocks = []
     for (_cid, file, s, e, preview) in contexts:
         blocks.append(f"### {file}:{s}-{e}\n{preview}")
-    return textwrap.dedent(f"""
-    You are an expert software assistant. Your ONLY job is to answer the user's question,
-    and you must ground your answer strictly in the provided excerpts (no outside knowledge).
 
-    RULES (follow all):
-      1) Stay laser-focused on the exact question below. Do not change the task.
-      2) Use ONLY information found in the Context excerpts.
-      3) If the question asks to LIST / NAME / FIND, return a bullet list of findings.
-      4) Do NOT write code or pseudo-code unless the question explicitly asks for code.
-      5) If the answer cannot be found in the excerpts, say: "Not found in provided context."
-      6) Keep the answer concise and specific. No restatements of the question.
-      7) End with a "Sources:" section that lists only file:line ranges you actually used.
+    return textwrap.dedent(f"""
+    You are an expert software assistant. You must answer ONLY using the provided code excerpts.
+    If the excerpts are insufficient or off-topic, say exactly:
+    "I don’t have enough on-topic context to answer. I would need: <list missing info>."
+    Do NOT invent details. Do NOT change the question.
 
     Question:
     {question}
@@ -40,11 +34,11 @@ def _build_prompt(question: str, contexts: List[Tuple[str, str, int, int, str]])
     Context:
     {'\n\n'.join(blocks)}
 
-    Return format:
-    - A short direct answer (bullets OK; no preamble).
-    - Then a line "Sources:" and a bullet list of file:line citations.
+    Tasks:
+    1) Restate the question in one short sentence to confirm scope.
+    2) Provide a precise answer grounded in the excerpts above.
+    3) End with a "Sources:" section listing file:line citations you used.
     """).strip()
-
 
 
 
@@ -100,15 +94,7 @@ class SeanceAgent:
 
         task = Task(
             description=prompt,
-            expected_output=(
-                "A concise, directly on-task answer based ONLY on the provided Context.\n"
-                "- If the question asks to LIST/NAME/FIND, provide a bullet list of findings only.\n"
-                "- No code unless explicitly asked.\n"
-                "- If not found in Context, respond exactly: 'Not found in provided context.'\n"
-                "- End with:\n"
-                "Sources:\n"
-                "- file.py:10-35\n"
-            ),
+            expected_output="A concise, accurate answer with a final 'Sources:' section listing file:line citations.",
             agent=code_answerer,
         )
 
