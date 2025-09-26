@@ -120,6 +120,8 @@ def ward_cmd(
         "  poltergeist seance connect --path . --name app-core\n"
         "  poltergeist seance index --name app-core\n"
         "  poltergeist seance chat --name app-core\n"
+        "  poltergeist seance chat --name app-core --wide\n"
+        "  poltergeist seance chat --name app-core --env\n"
     ),
 )
 def seance_cmd(
@@ -137,7 +139,9 @@ def seance_cmd(
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM; use extractive preview"),
     model: str = typer.Option(None, "--model", help="LLM model id (defaults from env)"),
     verbose: bool = typer.Option(False, "--verbose"),
-    deep: bool = typer.Option(False, "--deep", help="Feed whole files (top hits) to the LLM"),
+    deep: bool = typer.Option(False, "--deep", help="Search more within each top file"),
+    wide: bool = typer.Option(False, "--wide", help="Cover many files with small slices"),
+    env_reload: bool = typer.Option(False, "--env", help="Reload .env before answering"),
 ):
     """
     Wrapper so 'seance' behaves like our other single-entry commands.
@@ -165,6 +169,8 @@ def seance_cmd(
             model=model,
             verbose=verbose,
             deep=deep,
+            wide=wide,
+            env_reload=env_reload,
         )
         return
 
