@@ -176,12 +176,14 @@ def _postprocess_contexts(question: str,
                           target_ctx: int,
                           mode_label: str) -> tuple[list[tuple[str,str,int,int,str]], list[str]]:
     """
-    Re-rank contexts by (1) passing a min on-topic floor, (2) query-hit count desc,
+    Re-rank contexts by (1) a min on-topic floor, (2) query-hit count desc,
     (3) non-docs before docs; optionally cap docs by fraction; trim to target size.
     Also prints query terms and per-context hit counts when SEANCE_RETRIEVAL_LOG=true.
     """
+
     min_qhits      = _env_int("SEANCE_MIN_QHITS", 1)
     demote_docs    = _env_bool("SEANCE_DEMOTE_DOCS", True)
+    exclude_docs   = _env_bool("SEANCE_EXCLUDE_DOCS", False)
     doc_max_frac_s = os.getenv("SEANCE_DOC_MAX_FRAC", "0.3")
     try:
         doc_max_frac = float(doc_max_frac_s)
@@ -191,15 +193,22 @@ def _postprocess_contexts(question: str,
     qterms = [t for t in _tokenize_simple(question) if len(t) > 1]
     qset   = set(qterms)
 
-    enriched = []
-    for cid, f, s, e, preview in contexts:
-        toks = _tokenize_simple(preview)
-        qhits = sum(1 for t in qset if t in toks)
-        doc = _is_doc(f)
-        # sort key: first group that passes min_qhits (0 best), then qhits desc,
-        # then non-docs before docs, then shorter slice first, then file name tie-breaker
-        key = (0 if qhits >= min_qhits else 1, -qhits, 1 if doc else 0, (e - s), f)
-        enriched.append((key, cid, f, s, e, preview, qhits, doc))
+    def _build_enriched(skip_docs: bool):
+        enriched_local = []
+        for cid, f, s, e, preview in contexts:
+            is_doc = _is_doc(f)
+            if skip_docs and is_doc:
+                continue
+            toks = _tokenize_simple(preview)
+            qhits = sum(1 for t in qset if t in toks)
+            key = (0 if qhits >= min_qhits else 1, -qhits, 1 if is_doc else 0, (e - s), f)
+            enriched_local.append((key, cid, f, s, e, preview, qhits, is_doc))
+        return enriched_local
+
+    # First pass honoring SEANCE_EXCLUDE_DOCS; fallback to include docs if that empties everything
+    enriched = _build_enriched(skip_docs=exclude_docs)
+    if exclude_docs and not enriched:
+        enriched = _build_enriched(skip_docs=False)
 
     enriched.sort(key=lambda x: x[0])
 
@@ -233,7 +242,6 @@ def _postprocess_contexts(question: str,
     final_contexts = [(it[1], it[2], it[3], it[4], it[5]) for it in enriched]
     sources_out    = [f"{it[2]}:{it[3]}-{it[4]}" for it in enriched]
     return final_contexts, sources_out
-
 
 # ─────────────────────────────────── connect ───────────────────────────────────
 @app.command("connect")
@@ -478,9 +486,10 @@ def chat(
                     contexts.append((cid, meta.file, start, end, preview))
                     taken_per_file[meta.file] += 1
 
-            # Re-rank + doc-demote + trim
-            contexts, sources_out = _postprocess_contexts(question, contexts, min(max_contexts, len(contexts)), "WIDE")
-
+            # Re-rank + doc-demote + trim (feed fewer to the LLM)
+            wide_target = _env_int("SEANCE_WIDE_TARGET", session.info.k)
+            target_ctx  = min(wide_target, len(contexts))
+            contexts, sources_out = _postprocess_contexts(question, contexts, target_ctx, "WIDE")
 
         elif use_deep:
             # ── DEEP: top files, several slices within each ─────────────────────
@@ -525,9 +534,10 @@ def chat(
                 contexts.append((cid, meta.file, start, end, preview))
                 taken_per_file[meta.file] += 1
 
-            # Re-rank + doc-demote + trim
-            contexts, sources_out = _postprocess_contexts(question, contexts, min(max_contexts, len(contexts)), "DEEP")
-
+            # Re-rank + doc-demote + trim (feed fewer to the LLM)
+            deep_target = _env_int("SEANCE_DEEP_TARGET", session.info.k)
+            target_ctx  = min(deep_target, len(contexts))
+            contexts, sources_out = _postprocess_contexts(question, contexts, target_ctx, "DEEP")
 
         else:
             diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
