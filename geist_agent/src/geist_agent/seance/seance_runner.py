@@ -154,6 +154,87 @@ def _default_seance_name(root: Path) -> str:
     s = re.sub(r"[^a-z0-9._-]+", "", s)
     return s or "seance"
 
+# ---------- rerank & doc-demotion helpers -------------------------------------
+_DOC_SUFFIXES = {".md", ".rst", ".txt"}
+_DOC_NAMES = {"readme", "license", "changelog", "contributing"}
+
+def _is_doc(path: str) -> bool:
+    p = path.lower()
+    if any(seg in p for seg in ("/docs/", "/doc/", "/guides/", "/examples/")):
+        return True
+    base = p.rsplit("/", 1)[-1]
+    stem = base.split(".", 1)[0]
+    if stem in _DOC_NAMES:
+        return True
+    return any(p.endswith(s) for s in _DOC_SUFFIXES)
+
+def _tokenize_simple(s: str) -> set[str]:
+    return set(re.findall(r"[A-Za-z0-9_]+", s.lower()))
+
+def _postprocess_contexts(question: str,
+                          contexts: list[tuple[str, str, int, int, str]],
+                          target_ctx: int,
+                          mode_label: str) -> tuple[list[tuple[str,str,int,int,str]], list[str]]:
+    """
+    Re-rank contexts by (1) passing a min on-topic floor, (2) query-hit count desc,
+    (3) non-docs before docs; optionally cap docs by fraction; trim to target size.
+    Also prints query terms and per-context hit counts when SEANCE_RETRIEVAL_LOG=true.
+    """
+    min_qhits      = _env_int("SEANCE_MIN_QHITS", 1)
+    demote_docs    = _env_bool("SEANCE_DEMOTE_DOCS", True)
+    doc_max_frac_s = os.getenv("SEANCE_DOC_MAX_FRAC", "0.3")
+    try:
+        doc_max_frac = float(doc_max_frac_s)
+    except Exception:
+        doc_max_frac = 0.3
+
+    qterms = [t for t in _tokenize_simple(question) if len(t) > 1]
+    qset   = set(qterms)
+
+    enriched = []
+    for cid, f, s, e, preview in contexts:
+        toks = _tokenize_simple(preview)
+        qhits = sum(1 for t in qset if t in toks)
+        doc = _is_doc(f)
+        # sort key: first group that passes min_qhits (0 best), then qhits desc,
+        # then non-docs before docs, then shorter slice first, then file name tie-breaker
+        key = (0 if qhits >= min_qhits else 1, -qhits, 1 if doc else 0, (e - s), f)
+        enriched.append((key, cid, f, s, e, preview, qhits, doc))
+
+    enriched.sort(key=lambda x: x[0])
+
+    # Optional doc cap (fraction of final target)
+    if demote_docs and target_ctx > 0:
+        max_docs = max(0, int(doc_max_frac * target_ctx))
+        kept, docs = [], 0
+        for item in enriched:
+            if len(kept) >= target_ctx:
+                break
+            is_doc = item[7]
+            if is_doc and docs >= max_docs:
+                continue
+            kept.append(item)
+            if is_doc:
+                docs += 1
+        enriched = kept
+    else:
+        enriched = enriched[:target_ctx]
+
+    # Logging signal (query terms + per-context hits)
+    if _env_bool("SEANCE_RETRIEVAL_LOG", True):
+        qt = ", ".join(sorted(set(qterms))[:8]) or "∅"
+        on_topic = sum(1 for it in enriched if it[6] >= min_qhits)
+        typer.secho(f"• Query terms: {qt}  | qhits≥{min_qhits}: {on_topic}/{len(enriched)}", fg="blue")
+        if _env_bool("SEANCE_LOG_CONTEXT_HITS", False):
+            for it in enriched:
+                _, _cid, f, s, e, _txt, qh, is_doc = it
+                typer.secho(f"  - {f}:{s}-{e} | {'doc' if is_doc else 'code'} | qhits={qh}", fg="blue")
+
+    final_contexts = [(it[1], it[2], it[3], it[4], it[5]) for it in enriched]
+    sources_out    = [f"{it[2]}:{it[3]}-{it[4]}" for it in enriched]
+    return final_contexts, sources_out
+
+
 # ─────────────────────────────────── connect ───────────────────────────────────
 @app.command("connect")
 def connect(
@@ -338,6 +419,7 @@ def chat(
             # ── WIDE: many files, few slices each ───────────────────────────────
             max_contexts = _env_int("SEANCE_WIDE_MAX_CONTEXTS", session.info.k * 2)
             per_file_cap = _env_int("SEANCE_WIDE_PER_FILE", 1)
+            per_file_cap2= _env_int("SEANCE_WIDE_PER_FILE_2", 2)  # 2nd pass allowance
             surround     = _env_int("SEANCE_WIDE_SURROUND", 30)
             ctx_char_cap = _env_int("SEANCE_WIDE_MAX_CHARS_PER_CTX", 1000)
 
@@ -345,6 +427,7 @@ def chat(
             taken_per_file: dict[str, int] = defaultdict(int)
             contexts = []
 
+            # 1st pass: at most per_file_cap slices per file
             for cid, _score in matches:
                 if len(contexts) >= max_contexts:
                     break
@@ -369,17 +452,44 @@ def chat(
                 contexts.append((cid, meta.file, start, end, preview))
                 taken_per_file[meta.file] += 1
 
-            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _txt) in contexts]
+            # 2nd pass: allow up to per_file_cap2 if we're still short
+            if len(contexts) < max_contexts and per_file_cap2 > per_file_cap:
+                for cid, _score in matches:
+                    if len(contexts) >= max_contexts:
+                        break
+                    meta = man.chunks.get(cid)
+                    if not meta:
+                        continue
+                    if taken_per_file[meta.file] >= per_file_cap2:
+                        continue
+
+                    fp = root / meta.file
+                    try:
+                        lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+                        start = max(1, meta.start_line - surround)
+                        end   = min(len(lines), meta.end_line + surround)
+                        preview = "\n".join(lines[start - 1:end])
+                    except Exception:
+                        start, end, preview = meta.start_line, meta.end_line, "(unreadable chunk)"
+
+                    if len(preview) > ctx_char_cap:
+                        preview = preview[:ctx_char_cap]
+
+                    contexts.append((cid, meta.file, start, end, preview))
+                    taken_per_file[meta.file] += 1
+
+            # Re-rank + doc-demote + trim
+            contexts, sources_out = _postprocess_contexts(question, contexts, min(max_contexts, len(contexts)), "WIDE")
+
 
         elif use_deep:
             # ── DEEP: top files, several slices within each ─────────────────────
-            top_files   = _env_int("SEANCE_DEEP_TOP_FILES", 3)
-            max_contexts= _env_int("SEANCE_DEEP_MAX_CONTEXTS", session.info.k * 2)
-            per_file_cap= _env_int("SEANCE_DEEP_PER_FILE", 4)
-            surround    = _env_int("SEANCE_DEEP_SURROUND", 60)
-            ctx_char_cap= _env_int("SEANCE_DEEP_MAX_CHARS_PER_CTX", 1600)
+            top_files    = _env_int("SEANCE_DEEP_TOP_FILES", 3)
+            max_contexts = _env_int("SEANCE_DEEP_MAX_CONTEXTS", session.info.k * 2)
+            per_file_cap = _env_int("SEANCE_DEEP_PER_FILE", 4)
+            surround     = _env_int("SEANCE_DEEP_SURROUND", 60)
+            ctx_char_cap = _env_int("SEANCE_DEEP_MAX_CHARS_PER_CTX", 1600)
 
-            # 1) rank files by total score
             file_scores: dict[str, float] = {}
             for cid, score in matches:
                 meta = man.chunks.get(cid)
@@ -387,7 +497,6 @@ def chat(
                     file_scores[meta.file] = file_scores.get(meta.file, 0.0) + float(score)
             ranked_files = [f for (f, _tot) in sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_files]]
 
-            # 2) take multiple best hits per top file
             from collections import defaultdict
             taken_per_file: dict[str, int] = defaultdict(int)
             contexts = []
@@ -416,13 +525,17 @@ def chat(
                 contexts.append((cid, meta.file, start, end, preview))
                 taken_per_file[meta.file] += 1
 
-            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _txt) in contexts]
+            # Re-rank + doc-demote + trim
+            contexts, sources_out = _postprocess_contexts(question, contexts, min(max_contexts, len(contexts)), "DEEP")
+
 
         else:
             diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
             min_unique = _env_int("SEANCE_MIN_UNIQUE_FILES", max(1, min(5, session.info.k)))
 
             seen_files = set()
+            contexts = []
+
             for cid, _score in matches:
                 meta = man.chunks.get(cid)
                 if not meta:
@@ -438,12 +551,10 @@ def chat(
                 except Exception:
                     preview = "(unreadable chunk)"
                 contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
-                sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
-                # stop when we have k contexts AND we've hit the uniqueness minimum
                 if len(contexts) >= session.info.k and len(seen_files) >= min_unique:
                     break
 
-            # If we didn't reach min_unique, sweep again to grab new files farther down:
+            # If we didn't reach min_unique, sweep again for new files:
             if len(seen_files) < min_unique:
                 for cid, _score in matches:
                     if len(seen_files) >= min_unique or len(contexts) >= session.info.k:
@@ -460,7 +571,10 @@ def chat(
                     except Exception:
                         preview = "(unreadable chunk)"
                     contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
-                    sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
+
+            # Re-rank + doc-demote + trim
+            contexts, sources_out = _postprocess_contexts(question, contexts, min(session.info.k, len(contexts)), retriever.upper())
+
 
 
         # Spinner shows which retrieval path ran
