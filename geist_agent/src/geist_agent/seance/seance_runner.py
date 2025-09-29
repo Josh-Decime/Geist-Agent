@@ -442,6 +442,8 @@ def chat(
                 meta = man.chunks.get(cid)
                 if not meta:
                     continue
+                if _env_bool("SEANCE_EXCLUDE_DOCS", False) and _is_doc(meta.file):
+                    continue
                 if taken_per_file[meta.file] >= per_file_cap:
                     continue
 
@@ -468,6 +470,8 @@ def chat(
                     meta = man.chunks.get(cid)
                     if not meta:
                         continue
+                    if _env_bool("SEANCE_EXCLUDE_DOCS", False) and _is_doc(meta.file):
+                        continue
                     if taken_per_file[meta.file] >= per_file_cap2:
                         continue
 
@@ -486,58 +490,47 @@ def chat(
                     contexts.append((cid, meta.file, start, end, preview))
                     taken_per_file[meta.file] += 1
 
-            # Re-rank + doc-demote + trim (feed fewer to the LLM)
+            # Keep original order; optionally exclude docs; then truncate
+            if _env_bool("SEANCE_EXCLUDE_DOCS", False):
+                contexts = [c for c in contexts if not _is_doc(c[1])]
+
             wide_target = _env_int("SEANCE_WIDE_TARGET", session.info.k)
-            target_ctx  = min(wide_target, len(contexts))
-            contexts, sources_out = _postprocess_contexts(question, contexts, target_ctx, "WIDE")
+            contexts = contexts[:min(wide_target, len(contexts))]
+            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _preview) in contexts]
+
 
         elif use_deep:
-            # ── DEEP: top files, several slices within each ─────────────────────
-            top_files    = _env_int("SEANCE_DEEP_TOP_FILES", 3)
-            max_contexts = _env_int("SEANCE_DEEP_MAX_CONTEXTS", session.info.k * 2)
-            per_file_cap = _env_int("SEANCE_DEEP_PER_FILE", 4)
-            surround     = _env_int("SEANCE_DEEP_SURROUND", 60)
-            ctx_char_cap = _env_int("SEANCE_DEEP_MAX_CHARS_PER_CTX", 1600)
+            # ── DEEP: pick top-N files by total score, expand best window per file (simple, reliable) ──
+            top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
 
+            # sum scores per file and remember each file's best chunk span
             file_scores: dict[str, float] = {}
+            best_window: dict[str, tuple[str, int, int, float]] = {}
+
             for cid, score in matches:
                 meta = man.chunks.get(cid)
-                if meta:
-                    file_scores[meta.file] = file_scores.get(meta.file, 0.0) + float(score)
-            ranked_files = [f for (f, _tot) in sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_files]]
-
-            from collections import defaultdict
-            taken_per_file: dict[str, int] = defaultdict(int)
-            contexts = []
-
-            for cid, _score in matches:
-                if len(contexts) >= max_contexts:
-                    break
-                meta = man.chunks.get(cid)
-                if not meta or meta.file not in ranked_files:
+                if not meta:
                     continue
-                if taken_per_file[meta.file] >= per_file_cap:
+                if _env_bool("SEANCE_EXCLUDE_DOCS", False) and _is_doc(meta.file):
                     continue
+                f = meta.file
+                sc = float(score)
+                file_scores[f] = file_scores.get(f, 0.0) + sc
+                prev = best_window.get(f)
+                if prev is None or sc > prev[3]:
+                    best_window[f] = (cid, meta.start_line, meta.end_line, sc)
 
-                fp = root / meta.file
-                try:
-                    lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-                    start = max(1, meta.start_line - surround)
-                    end   = min(len(lines), meta.end_line + surround)
-                    preview = "\n".join(lines[start - 1:end])
-                except Exception:
-                    start, end, preview = meta.start_line, meta.end_line, "(unreadable chunk)"
+            # choose top-N files by total relevance
+            ranked_files = sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
 
-                if len(preview) > ctx_char_cap:
-                    preview = preview[:ctx_char_cap]
+            # expand the best window in each selected file (bounded slices, not whole files)
+            tmp = []
+            for f, _tot in ranked_files:
+                cid, s, e, _ = best_window[f]
+                tmp.append((cid, f, s, e, ""))  # preview filled by expander
 
-                contexts.append((cid, meta.file, start, end, preview))
-                taken_per_file[meta.file] += 1
-
-            # Re-rank + doc-demote + trim (feed fewer to the LLM)
-            deep_target = _env_int("SEANCE_DEEP_TARGET", session.info.k)
-            target_ctx  = min(deep_target, len(contexts))
-            contexts, sources_out = _postprocess_contexts(question, contexts, target_ctx, "DEEP")
+            contexts = _expand_to_deep_contexts(tmp, root, top_n)
+            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _txt) in contexts]
 
         else:
             diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
