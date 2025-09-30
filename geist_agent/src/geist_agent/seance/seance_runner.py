@@ -490,14 +490,10 @@ def chat(
                     contexts.append((cid, meta.file, start, end, preview))
                     taken_per_file[meta.file] += 1
 
-            # Keep original order; optionally exclude docs; then truncate
-            if _env_bool("SEANCE_EXCLUDE_DOCS", False):
-                contexts = [c for c in contexts if not _is_doc(c[1])]
-
+            # Re-rank + doc-demote + trim (also logs query terms)
             wide_target = _env_int("SEANCE_WIDE_TARGET", session.info.k)
-            contexts = contexts[:min(wide_target, len(contexts))]
-            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _preview) in contexts]
-
+            target_ctx  = min(wide_target, len(contexts))
+            contexts, sources_out = _postprocess_contexts(question, contexts, target_ctx, "WIDE")
 
         elif use_deep:
             # ── DEEP: pick top-N files by total score, expand best window per file (simple, reliable) ──
@@ -530,7 +526,10 @@ def chat(
                 tmp.append((cid, f, s, e, ""))  # preview filled by expander
 
             contexts = _expand_to_deep_contexts(tmp, root, top_n)
-            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _txt) in contexts]
+            # Re-rank + doc-demote + trim (also logs query terms)
+            deep_target = _env_int("SEANCE_DEEP_TARGET", session.info.k)
+            target_ctx  = min(deep_target, len(contexts))
+            contexts, sources_out = _postprocess_contexts(question, contexts, target_ctx, "DEEP")
 
         else:
             diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
