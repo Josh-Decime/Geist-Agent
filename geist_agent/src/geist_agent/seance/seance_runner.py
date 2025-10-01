@@ -171,6 +171,12 @@ def _is_doc(path: str) -> bool:
 def _tokenize_simple(s: str) -> set[str]:
     return set(re.findall(r"[A-Za-z0-9_]+", s.lower()))
 
+def _log_query_terms_simple(question: str):
+    if _env_bool("SEANCE_RETRIEVAL_LOG", True):
+        qterms = [t for t in _tokenize_simple(question) if len(t) > 1]
+        qt = ", ".join(sorted(set(qterms))[:8]) or "∅"
+        typer.secho(f"• Query terms: {qt}", fg="blue")
+
 def _postprocess_contexts(question: str,
                           contexts: list[tuple[str, str, int, int, str]],
                           target_ctx: int,
@@ -424,34 +430,36 @@ def chat(
 
         # --- If --wide or --deep flags are used ---
         if use_wide:
-            # ── WIDE: many files, few slices each ───────────────────────────────
-            max_contexts = _env_int("SEANCE_WIDE_MAX_CONTEXTS", session.info.k * 2)
-            per_file_cap = _env_int("SEANCE_WIDE_PER_FILE", 1)
-            per_file_cap2= _env_int("SEANCE_WIDE_PER_FILE_2", 2)  # 2nd pass allowance
-            surround     = _env_int("SEANCE_WIDE_SURROUND", 30)
-            ctx_char_cap = _env_int("SEANCE_WIDE_MAX_CHARS_PER_CTX", 1000)
+            # ── WIDE (works-like-you-expect):
+            # Take many *distinct* files, very small slices, preserve retrieval order.
+            target_ctx   = _env_int("SEANCE_WIDE_TARGET", session.info.k * 2)
+            ctx_char_cap = _env_int("SEANCE_WIDE_MAX_CHARS_PER_CTX", 600)   # small = more files
+            min_qhits    = _env_int("SEANCE_MIN_QHITS", 1)
+            exclude_docs = _env_bool("SEANCE_EXCLUDE_DOCS", False)
 
-            from collections import defaultdict
-            taken_per_file: dict[str, int] = defaultdict(int)
-            contexts = []
+            # query terms once
+            qterms = [t for t in _tokenize_simple(question) if len(t) > 1]
+            qset   = set(qterms)
 
-            # 1st pass: at most per_file_cap slices per file
+            seen_files: set[str] = set()
+            contexts: list[tuple[str,str,int,int,str]] = []
+
+            # 1st pass: only keep a file’s *first* hit + enforce "on-topic" (min_qhits)
             for cid, _score in matches:
-                if len(contexts) >= max_contexts:
+                if len(contexts) >= target_ctx:
                     break
                 meta = man.chunks.get(cid)
                 if not meta:
                     continue
-                if _env_bool("SEANCE_EXCLUDE_DOCS", False) and _is_doc(meta.file):
+                if exclude_docs and _is_doc(meta.file):
                     continue
-                if taken_per_file[meta.file] >= per_file_cap:
+                if meta.file in seen_files:
                     continue
 
-                fp = root / meta.file
+                # take just the exact chunk (very small)
                 try:
-                    lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-                    start = max(1, meta.start_line - surround)
-                    end   = min(len(lines), meta.end_line + surround)
+                    lines = (root / meta.file).read_text(encoding="utf-8", errors="replace").splitlines()
+                    start, end = meta.start_line, meta.end_line
                     preview = "\n".join(lines[start - 1:end])
                 except Exception:
                     start, end, preview = meta.start_line, meta.end_line, "(unreadable chunk)"
@@ -459,77 +467,101 @@ def chat(
                 if len(preview) > ctx_char_cap:
                     preview = preview[:ctx_char_cap]
 
-                contexts.append((cid, meta.file, start, end, preview))
-                taken_per_file[meta.file] += 1
+                # on-topic floor (generic)
+                toks   = _tokenize_simple(preview)
+                qhits  = sum(1 for t in qset if t in toks)
+                if qhits < min_qhits:
+                    continue
 
-            # 2nd pass: allow up to per_file_cap2 if we're still short
-            if len(contexts) < max_contexts and per_file_cap2 > per_file_cap:
+                contexts.append((cid, meta.file, start, end, preview))
+                seen_files.add(meta.file)
+
+            # 2nd pass (relax on-topic floor) if we didn't fill
+            if len(contexts) < target_ctx:
                 for cid, _score in matches:
-                    if len(contexts) >= max_contexts:
+                    if len(contexts) >= target_ctx:
                         break
                     meta = man.chunks.get(cid)
-                    if not meta:
+                    if not meta or (exclude_docs and _is_doc(meta.file)) or (meta.file in seen_files):
                         continue
-                    if _env_bool("SEANCE_EXCLUDE_DOCS", False) and _is_doc(meta.file):
-                        continue
-                    if taken_per_file[meta.file] >= per_file_cap2:
-                        continue
-
-                    fp = root / meta.file
                     try:
-                        lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
-                        start = max(1, meta.start_line - surround)
-                        end   = min(len(lines), meta.end_line + surround)
+                        lines = (root / meta.file).read_text(encoding="utf-8", errors="replace").splitlines()
+                        start, end = meta.start_line, meta.end_line
                         preview = "\n".join(lines[start - 1:end])
                     except Exception:
                         start, end, preview = meta.start_line, meta.end_line, "(unreadable chunk)"
-
                     if len(preview) > ctx_char_cap:
                         preview = preview[:ctx_char_cap]
-
                     contexts.append((cid, meta.file, start, end, preview))
-                    taken_per_file[meta.file] += 1
+                    seen_files.add(meta.file)
 
-            # Re-rank + doc-demote + trim (also logs query terms)
-            wide_target = _env_int("SEANCE_WIDE_TARGET", session.info.k)
-            target_ctx  = min(wide_target, len(contexts))
-            contexts, sources_out = _postprocess_contexts(question, contexts, target_ctx, "WIDE")
+            # keep original order; build sources; log terms
+            contexts = contexts[:target_ctx]
+            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _txt) in contexts]
+            _log_query_terms_simple(question)
 
         elif use_deep:
-            # ── DEEP: pick top-N files by total score, expand best window per file (simple, reliable) ──
-            top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
+            # ── DEEP (match last-known-good behavior but seed with *default's success*):
+            # 1) First, select files *exactly like the default path* would do (because default works).
+            diversify   = _env_bool("SEANCE_DIVERSIFY_FILES", True)
+            min_unique  = _env_int("SEANCE_MIN_UNIQUE_FILES", max(1, min(5, session.info.k)))
+            deep_target = _env_int("SEANCE_DEEP_TARGET", session.info.k)
+            top_n       = _env_int("SEANCE_DEEP_TOP_FILES", 3)
 
-            # sum scores per file and remember each file's best chunk span
-            file_scores: dict[str, float] = {}
-            best_window: dict[str, tuple[str, int, int, float]] = {}
-
-            for cid, score in matches:
+            seen_files: set[str] = set()
+            seed_files_order: list[str] = []
+            # Collect the same initial contexts the default would take (no rerank)
+            for cid, _score in matches:
                 meta = man.chunks.get(cid)
                 if not meta:
                     continue
-                if _env_bool("SEANCE_EXCLUDE_DOCS", False) and _is_doc(meta.file):
+                if diversify and meta.file in seen_files:
                     continue
-                f = meta.file
+                seen_files.add(meta.file)
+                seed_files_order.append(meta.file)
+                if len(seed_files_order) >= min_unique or len(seed_files_order) >= deep_target:
+                    # behave like default's early stop condition
+                    break
+
+            # If we still didn't reach min_unique, sweep again like default
+            if len(seed_files_order) < min_unique:
+                for cid, _score in matches:
+                    if len(seed_files_order) >= min_unique or len(seed_files_order) >= deep_target:
+                        break
+                    meta = man.chunks.get(cid)
+                    if not meta or (diversify and meta.file in seen_files):
+                        continue
+                    seen_files.add(meta.file)
+                    seed_files_order.append(meta.file)
+
+            # Reduce to top_n files, preserving the *default-derived* order
+            ranked_files = seed_files_order[:top_n]
+
+            # 2) For those files, pick the best chunk (highest score) from matches
+            best_window: dict[str, tuple[str,int,int,float]] = {}
+            for cid, score in matches:
+                meta = man.chunks.get(cid)
+                if not meta or meta.file not in ranked_files:
+                    continue
                 sc = float(score)
-                file_scores[f] = file_scores.get(f, 0.0) + sc
-                prev = best_window.get(f)
+                prev = best_window.get(meta.file)
                 if prev is None or sc > prev[3]:
-                    best_window[f] = (cid, meta.start_line, meta.end_line, sc)
+                    best_window[meta.file] = (cid, meta.start_line, meta.end_line, sc)
 
-            # choose top-N files by total relevance
-            ranked_files = sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
-
-            # expand the best window in each selected file (bounded slices, not whole files)
+            # 3) Expand those windows (bounded slices), one per file
             tmp = []
-            for f, _tot in ranked_files:
+            for f in ranked_files:
+                if f not in best_window:
+                    continue
                 cid, s, e, _ = best_window[f]
-                tmp.append((cid, f, s, e, ""))  # preview filled by expander
+                tmp.append((cid, f, s, e, ""))
 
-            contexts = _expand_to_deep_contexts(tmp, root, top_n)
-            # Re-rank + doc-demote + trim (also logs query terms)
-            deep_target = _env_int("SEANCE_DEEP_TARGET", session.info.k)
-            target_ctx  = min(deep_target, len(contexts))
-            contexts, sources_out = _postprocess_contexts(question, contexts, target_ctx, "DEEP")
+            contexts = _expand_to_deep_contexts(tmp, root, len(ranked_files))
+
+            # simple cap + sources + query-term log
+            contexts   = contexts[:min(deep_target, len(contexts))]
+            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _txt) in contexts]
+            _log_query_terms_simple(question)
 
         else:
             diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
