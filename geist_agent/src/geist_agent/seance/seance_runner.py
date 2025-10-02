@@ -11,7 +11,7 @@ import threading
 import time
 from contextlib import contextmanager
 
-from geist_agent.utils import ReportUtils, walk_files_compat as walk_files, EnvUtils
+from geist_agent.utils import ReportUtils, walk_files_compat as walk_files
 
 from .seance_index import (
     connect as seance_connect,
@@ -154,101 +154,6 @@ def _default_seance_name(root: Path) -> str:
     s = re.sub(r"[^a-z0-9._-]+", "", s)
     return s or "seance"
 
-# ---------- rerank & doc-demotion helpers -------------------------------------
-_DOC_SUFFIXES = {".md", ".rst", ".txt"}
-_DOC_NAMES = {"readme", "license", "changelog", "contributing"}
-
-def _is_doc(path: str) -> bool:
-    p = path.lower()
-    if any(seg in p for seg in ("/docs/", "/doc/", "/guides/", "/examples/")):
-        return True
-    base = p.rsplit("/", 1)[-1]
-    stem = base.split(".", 1)[0]
-    if stem in _DOC_NAMES:
-        return True
-    return any(p.endswith(s) for s in _DOC_SUFFIXES)
-
-def _tokenize_simple(s: str) -> set[str]:
-    return set(re.findall(r"[A-Za-z0-9_]+", s.lower()))
-
-def _log_query_terms_simple(question: str):
-    if _env_bool("SEANCE_RETRIEVAL_LOG", True):
-        qterms = [t for t in _tokenize_simple(question) if len(t) > 1]
-        qt = ", ".join(sorted(set(qterms))[:8]) or "∅"
-        typer.secho(f"• Query terms: {qt}", fg="blue")
-
-def _postprocess_contexts(question: str,
-                          contexts: list[tuple[str, str, int, int, str]],
-                          target_ctx: int,
-                          mode_label: str) -> tuple[list[tuple[str,str,int,int,str]], list[str]]:
-    """
-    Re-rank contexts by (1) a min on-topic floor, (2) query-hit count desc,
-    (3) non-docs before docs; optionally cap docs by fraction; trim to target size.
-    Also prints query terms and per-context hit counts when SEANCE_RETRIEVAL_LOG=true.
-    """
-
-    min_qhits      = _env_int("SEANCE_MIN_QHITS", 1)
-    demote_docs    = _env_bool("SEANCE_DEMOTE_DOCS", True)
-    exclude_docs   = _env_bool("SEANCE_EXCLUDE_DOCS", False)
-    doc_max_frac_s = os.getenv("SEANCE_DOC_MAX_FRAC", "0.3")
-    try:
-        doc_max_frac = float(doc_max_frac_s)
-    except Exception:
-        doc_max_frac = 0.3
-
-    qterms = [t for t in _tokenize_simple(question) if len(t) > 1]
-    qset   = set(qterms)
-
-    def _build_enriched(skip_docs: bool):
-        enriched_local = []
-        for cid, f, s, e, preview in contexts:
-            is_doc = _is_doc(f)
-            if skip_docs and is_doc:
-                continue
-            toks = _tokenize_simple(preview)
-            qhits = sum(1 for t in qset if t in toks)
-            key = (0 if qhits >= min_qhits else 1, -qhits, 1 if is_doc else 0, (e - s), f)
-            enriched_local.append((key, cid, f, s, e, preview, qhits, is_doc))
-        return enriched_local
-
-    # First pass honoring SEANCE_EXCLUDE_DOCS; fallback to include docs if that empties everything
-    enriched = _build_enriched(skip_docs=exclude_docs)
-    if exclude_docs and not enriched:
-        enriched = _build_enriched(skip_docs=False)
-
-    enriched.sort(key=lambda x: x[0])
-
-    # Optional doc cap (fraction of final target)
-    if demote_docs and target_ctx > 0:
-        max_docs = max(0, int(doc_max_frac * target_ctx))
-        kept, docs = [], 0
-        for item in enriched:
-            if len(kept) >= target_ctx:
-                break
-            is_doc = item[7]
-            if is_doc and docs >= max_docs:
-                continue
-            kept.append(item)
-            if is_doc:
-                docs += 1
-        enriched = kept
-    else:
-        enriched = enriched[:target_ctx]
-
-    # Logging signal (query terms + per-context hits)
-    if _env_bool("SEANCE_RETRIEVAL_LOG", True):
-        qt = ", ".join(sorted(set(qterms))[:8]) or "∅"
-        on_topic = sum(1 for it in enriched if it[6] >= min_qhits)
-        typer.secho(f"• Query terms: {qt}  | qhits≥{min_qhits}: {on_topic}/{len(enriched)}", fg="blue")
-        if _env_bool("SEANCE_LOG_CONTEXT_HITS", False):
-            for it in enriched:
-                _, _cid, f, s, e, _txt, qh, is_doc = it
-                typer.secho(f"  - {f}:{s}-{e} | {'doc' if is_doc else 'code'} | qhits={qh}", fg="blue")
-
-    final_contexts = [(it[1], it[2], it[3], it[4], it[5]) for it in enriched]
-    sources_out    = [f"{it[2]}:{it[3]}-{it[4]}" for it in enriched]
-    return final_contexts, sources_out
-
 # ─────────────────────────────────── connect ───────────────────────────────────
 @app.command("connect")
 def connect(
@@ -295,9 +200,7 @@ def chat(
     no_llm: bool = typer.Option(False, "--no-llm", help="Disable LLM; use extractive preview"),
     model: str = typer.Option(None, "--model", help="LLM model id (defaults from env)"),
     verbose: bool = typer.Option(False, "--verbose", help="Show detailed agent logs"),
-    deep: bool = typer.Option(False, "--deep", help="Search more within each top file"),
-    wide: bool = typer.Option(False, "--wide", help="Cover many files with small slices"),
-    env_reload: bool = typer.Option(False, "--env", help="Reload .env before answering"),
+    deep: bool = typer.Option(False, "--deep", help="Feed whole files (top hits) to the LLM"),
 
 ):
 
@@ -328,10 +231,7 @@ def chat(
     typer.secho("• Connected to index.", fg="green")
     paths = session.paths
     typer.secho(f"• Session folder: {paths['folder']}", fg="yellow")
-    typer.secho(
-    "Type your questions. Commands: :help, :q, :k <n>, :sources on|off, :deep on|off, :wide on|off, :env, :verbose on|off, :show session",
-    fg="cyan"
-)
+    typer.secho("Type your questions. Commands: :help, :q, :k <n>, :sources on|off, :deep on|off, :verbose on|off, :show session", fg="cyan")
     typer.echo("")
     session.append_message("system", "Séance is listening. Ask about this codebase (or supported text files).")
     typer.secho("Séance is listening. Ask about this codebase (or supported text files).", fg="magenta")
@@ -352,75 +252,51 @@ def chat(
 
         # --- inline --deep / --verbose toggles per question --------------------
         q_tokens = question.split()
-        q_deep  = "--deep"  in q_tokens
-        q_wide  = "--wide"  in q_tokens
-        q_env   = "--env"   in q_tokens
+        q_deep = "--deep" in q_tokens
         q_verbose = "--verbose" in q_tokens
 
-        # strip inline flags from the actual question
-        for flag in ("--deep","--wide","--env","--verbose"):
-            if flag in q_tokens:
-                q_tokens = [t for t in q_tokens if t != flag]
+        if q_deep:
+            q_tokens = [t for t in q_tokens if t != "--deep"]
+        if q_verbose:
+            q_tokens = [t for t in q_tokens if t != "--verbose"]
+
         question = " ".join(q_tokens).strip()
 
-        # If only toggles → set for next turn and continue
+        # If the user typed only a toggle, set it for next turn and skip now
         if not question:
             session.meta = getattr(session, "meta", {})
-            if q_deep:   session.meta["deep"] = True;  typer.secho("• deep = True", fg="green")
-            if q_wide:   session.meta["wide"] = True;  typer.secho("• wide = True", fg="green")
-            if q_env:
-                loaded = []
-                try:
-                    loaded = EnvUtils.load_env_for_tool()
-                except Exception:
-                    pass
-                typer.secho(f"• env reloaded ({len(loaded)} sources)", fg="green")
-            if q_verbose: session.meta["verbose"] = True; typer.secho("• verbose = True", fg="green")
+            if q_deep:
+                session.meta["deep"] = True
+                typer.secho("• deep = True (will apply to next question)", fg="green")
+            if q_verbose:
+                session.meta["verbose"] = True
+                typer.secho("• verbose = True (will apply to next question)", fg="green")
             continue
 
         session.append_message("user", question)
         typer.secho("⋯ retrieving context …", fg="blue")
 
-        # Decide whether deep/wide/verbose/env are in effect this turn
+        # Decide whether deep/verbose are in effect this turn:
+        # deep precedence: CLI flag -> REPL toggle -> inline flag
         use_deep = deep
-        use_wide = wide
         active_verbose = verbose
-
         if hasattr(session, "meta") and isinstance(session.meta, dict):
             use_deep = session.meta.get("deep", use_deep)
-            use_wide = session.meta.get("wide", use_wide)
             active_verbose = session.meta.get("verbose", active_verbose)
+        if q_deep:
+            use_deep = True
+        if q_verbose:
+            active_verbose = True
 
-        if q_deep:   use_deep = True
-        if q_wide:   use_wide = True
-        if q_verbose: active_verbose = True
-        if env_reload or q_env:
-            try:
-                loaded = EnvUtils.load_env_for_tool()
-                typer.secho(f"• env reloaded ({len(loaded)} sources)", fg="green")
-            except Exception:
-                typer.secho("• env reload failed (ignored)", fg="red")
-
-        # If both deep & wide are enabled, prefer WIDE (explicit breadth)
-        if use_deep and use_wide:
-            typer.secho("• both --deep and --wide set → favoring --wide for this turn", fg="yellow")
-            use_deep = False
 
         # Which retriever?
         retriever = (os.getenv("SEANCE_RETRIEVER") or "bm25").strip().lower()
         retriever = "bm25" if retriever not in ("bm25", "jaccard") else retriever
 
         # Candidate widening
-        widen     = _env_int("SEANCE_WIDEN", 2)
-        deep_mult = _env_int("SEANCE_DEEP_MULT", 4)
-        wide_mult = _env_int("SEANCE_WIDE_MULT", 4)
-
-        if use_wide:
-            retrieve_k = session.info.k * wide_mult
-        elif use_deep:
-            retrieve_k = session.info.k * deep_mult
-        else:
-            retrieve_k = session.info.k * widen
+        widen = _env_int("SEANCE_WIDEN", 2)           # non-deep widening
+        deep_mult = _env_int("SEANCE_DEEP_MULT", 4)   # deep widening
+        retrieve_k = (session.info.k * deep_mult) if use_deep else (session.info.k * widen)
 
         matches = retrieve(root, name, question, k=retrieve_k)
 
@@ -428,148 +304,40 @@ def chat(
         man = load_manifest(root, name)  # refresh
         contexts, sources_out = [], []
 
-        # --- If --wide or --deep flags are used ---
-        if use_wide:
-            # ── WIDE (works-like-you-expect):
-            # Take many *distinct* files, very small slices, preserve retrieval order.
-            target_ctx   = _env_int("SEANCE_WIDE_TARGET", session.info.k * 2)
-            ctx_char_cap = _env_int("SEANCE_WIDE_MAX_CHARS_PER_CTX", 600)   # small = more files
-            min_qhits    = _env_int("SEANCE_MIN_QHITS", 1)
-            exclude_docs = _env_bool("SEANCE_EXCLUDE_DOCS", False)
+        # --- SEANCE DEEP: aggregate by file & expand best windows ---
+        if use_deep:
+            top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
 
-            # query terms once
-            qterms = [t for t in _tokenize_simple(question) if len(t) > 1]
-            qset   = set(qterms)
+            # 1) sum candidate scores per file, and remember the best chunk per file
+            file_scores: dict[str, float] = {}
+            best_window: dict[str, tuple[str, int, int, float]] = {}
 
-            seen_files: set[str] = set()
-            contexts: list[tuple[str,str,int,int,str]] = []
-
-            # 1st pass: only keep a file’s *first* hit + enforce "on-topic" (min_qhits)
-            for cid, _score in matches:
-                if len(contexts) >= target_ctx:
-                    break
-                meta = man.chunks.get(cid)
-                if not meta:
-                    continue
-                if exclude_docs and _is_doc(meta.file):
-                    continue
-                if meta.file in seen_files:
-                    continue
-
-                # take just the exact chunk (very small)
-                try:
-                    lines = (root / meta.file).read_text(encoding="utf-8", errors="replace").splitlines()
-                    start, end = meta.start_line, meta.end_line
-                    preview = "\n".join(lines[start - 1:end])
-                except Exception:
-                    start, end, preview = meta.start_line, meta.end_line, "(unreadable chunk)"
-
-                if len(preview) > ctx_char_cap:
-                    preview = preview[:ctx_char_cap]
-
-                # on-topic floor (generic)
-                toks   = _tokenize_simple(preview)
-                qhits  = sum(1 for t in qset if t in toks)
-                if qhits < min_qhits:
-                    continue
-
-                contexts.append((cid, meta.file, start, end, preview))
-                seen_files.add(meta.file)
-
-            # 2nd pass (relax on-topic floor) if we didn't fill
-            if len(contexts) < target_ctx:
-                for cid, _score in matches:
-                    if len(contexts) >= target_ctx:
-                        break
-                    meta = man.chunks.get(cid)
-                    if not meta or (exclude_docs and _is_doc(meta.file)) or (meta.file in seen_files):
-                        continue
-                    try:
-                        lines = (root / meta.file).read_text(encoding="utf-8", errors="replace").splitlines()
-                        start, end = meta.start_line, meta.end_line
-                        preview = "\n".join(lines[start - 1:end])
-                    except Exception:
-                        start, end, preview = meta.start_line, meta.end_line, "(unreadable chunk)"
-                    if len(preview) > ctx_char_cap:
-                        preview = preview[:ctx_char_cap]
-                    contexts.append((cid, meta.file, start, end, preview))
-                    seen_files.add(meta.file)
-
-            # keep original order; build sources; log terms
-            contexts = contexts[:target_ctx]
-            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _txt) in contexts]
-            _log_query_terms_simple(question)
-
-        elif use_deep:
-            # ── DEEP (match last-known-good behavior but seed with *default's success*):
-            # 1) First, select files *exactly like the default path* would do (because default works).
-            diversify   = _env_bool("SEANCE_DIVERSIFY_FILES", True)
-            min_unique  = _env_int("SEANCE_MIN_UNIQUE_FILES", max(1, min(5, session.info.k)))
-            deep_target = _env_int("SEANCE_DEEP_TARGET", session.info.k)
-            top_n       = _env_int("SEANCE_DEEP_TOP_FILES", 3)
-
-            seen_files: set[str] = set()
-            seed_files_order: list[str] = []
-            # Collect the same initial contexts the default would take (no rerank)
-            for cid, _score in matches:
-                meta = man.chunks.get(cid)
-                if not meta:
-                    continue
-                if diversify and meta.file in seen_files:
-                    continue
-                seen_files.add(meta.file)
-                seed_files_order.append(meta.file)
-                if len(seed_files_order) >= min_unique or len(seed_files_order) >= deep_target:
-                    # behave like default's early stop condition
-                    break
-
-            # If we still didn't reach min_unique, sweep again like default
-            if len(seed_files_order) < min_unique:
-                for cid, _score in matches:
-                    if len(seed_files_order) >= min_unique or len(seed_files_order) >= deep_target:
-                        break
-                    meta = man.chunks.get(cid)
-                    if not meta or (diversify and meta.file in seen_files):
-                        continue
-                    seen_files.add(meta.file)
-                    seed_files_order.append(meta.file)
-
-            # Reduce to top_n files, preserving the *default-derived* order
-            ranked_files = seed_files_order[:top_n]
-
-            # 2) For those files, pick the best chunk (highest score) from matches
-            best_window: dict[str, tuple[str,int,int,float]] = {}
             for cid, score in matches:
                 meta = man.chunks.get(cid)
-                if not meta or meta.file not in ranked_files:
+                if not meta:
                     continue
-                sc = float(score)
+                file_scores[meta.file] = file_scores.get(meta.file, 0.0) + float(score)
                 prev = best_window.get(meta.file)
-                if prev is None or sc > prev[3]:
-                    best_window[meta.file] = (cid, meta.start_line, meta.end_line, sc)
+                if prev is None or score > prev[3]:
+                    best_window[meta.file] = (cid, meta.start_line, meta.end_line, float(score))
 
-            # 3) Expand those windows (bounded slices), one per file
+            # 2) choose top-N files by total relevance
+            ranked_files = sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+
+            # 3) prepare windows for expander (use each file's best chunk span)
             tmp = []
-            for f in ranked_files:
-                if f not in best_window:
-                    continue
-                cid, s, e, _ = best_window[f]
-                tmp.append((cid, f, s, e, ""))
+            for file, _tot in ranked_files:
+                cid, s, e, _best = best_window[file]
+                tmp.append((cid, file, s, e, ""))  # preview filled by expander
 
-            contexts = _expand_to_deep_contexts(tmp, root, len(ranked_files))
-
-            # simple cap + sources + query-term log
-            contexts   = contexts[:min(deep_target, len(contexts))]
-            sources_out = [f"{f}:{s}-{e}" for (_cid, f, s, e, _txt) in contexts]
-            _log_query_terms_simple(question)
-
+            # 4) expand those windows (bounded slices, not whole files)
+            contexts = _expand_to_deep_contexts(tmp, root, top_n)
+            sources_out = [f"{file}:{s}-{e}" for (_cid, file, s, e, _txt) in contexts]
         else:
             diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
             min_unique = _env_int("SEANCE_MIN_UNIQUE_FILES", max(1, min(5, session.info.k)))
 
             seen_files = set()
-            contexts = []
-
             for cid, _score in matches:
                 meta = man.chunks.get(cid)
                 if not meta:
@@ -585,10 +353,12 @@ def chat(
                 except Exception:
                     preview = "(unreadable chunk)"
                 contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
+                sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
+                # stop when we have k contexts AND we've hit the uniqueness minimum
                 if len(contexts) >= session.info.k and len(seen_files) >= min_unique:
                     break
 
-            # If we didn't reach min_unique, sweep again for new files:
+            # If we didn't reach min_unique, sweep again to grab new files farther down:
             if len(seen_files) < min_unique:
                 for cid, _score in matches:
                     if len(seen_files) >= min_unique or len(contexts) >= session.info.k:
@@ -605,20 +375,11 @@ def chat(
                     except Exception:
                         preview = "(unreadable chunk)"
                     contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
-
-            # Re-rank + doc-demote + trim
-            contexts, sources_out = _postprocess_contexts(question, contexts, min(session.info.k, len(contexts)), retriever.upper())
-
+                    sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
 
 
         # Spinner shows which retrieval path ran
-        if use_wide:
-            mode_label = "WIDE"
-        elif use_deep:
-            mode_label = "DEEP"
-        else:
-            mode_label = retriever.upper()
-
+        mode_label = "DEEP" if use_deep else retriever.upper()
         model_display = model or os.getenv("SEANCE_MODEL") or os.getenv("MODEL") or "default-model"
 
         # --- retrieval feedback (shows in terminal before the spinner) --------
@@ -665,9 +426,7 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
         typer.echo("  :q                      Quit")
         typer.echo("  :k <n>                  Set top-k retrieval")
         typer.echo("  :sources on|off         Toggle source printing")
-        typer.echo("  :deep on|off            Toggle deep mode (more within top files)")
-        typer.echo("  :wide on|off            Toggle wide mode (a little from many files)")
-        typer.echo("  :env                    Reload .env now (no reindex)")
+        typer.echo("  :deep on|off            Toggle deep (whole-file) context")
         typer.echo("  :verbose on|off         Toggle verbose agent logs")
         typer.echo("  :show session           Print session folder paths")
         return
@@ -681,25 +440,6 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
         else:
             typer.secho("Usage: :deep on|off", fg="red")
         return
-    if parts[0] == ":wide":
-        if len(parts) >= 2 and parts[1] in ("on", "off"):
-            val = parts[1] == "on"
-            session.meta = getattr(session, "meta", {})
-            session.meta["wide"] = val
-            typer.secho(f"• wide = {val}", fg="green")
-        else:
-            typer.secho("Usage: :wide on|off", fg="red")
-        return
-
-    if parts[0] == ":env":
-        try:
-            from geist_agent.utils import EnvUtils  # already imported at top, but re-import safe
-            loaded = EnvUtils.load_env_for_tool()
-            typer.secho(f"• env reloaded ({len(loaded)} sources)", fg="green")
-        except Exception as e:
-            typer.secho(f"• env reload failed: {e}", fg="red")
-        return
-
     if parts[0] == ":verbose":
         if len(parts) >= 2 and parts[1] in ("on", "off"):
             val = parts[1] == "on"
