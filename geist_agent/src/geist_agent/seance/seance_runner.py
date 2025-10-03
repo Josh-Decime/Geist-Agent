@@ -11,7 +11,7 @@ import threading
 import time
 from contextlib import contextmanager
 
-from geist_agent.utils import ReportUtils, walk_files_compat as walk_files
+from geist_agent.utils import ReportUtils, walk_files_compat as walk_files, EnvUtils
 
 from .seance_index import (
     connect as seance_connect,
@@ -201,6 +201,9 @@ def chat(
     model: str = typer.Option(None, "--model", help="LLM model id (defaults from env)"),
     verbose: bool = typer.Option(False, "--verbose", help="Show detailed agent logs"),
     deep: bool = typer.Option(False, "--deep", help="Feed whole files (top hits) to the LLM"),
+    env_reload: bool = typer.Option(False, "--env", help="Reload .env before answering"),
+    #Remove when --wide is rebuilt
+    wide: bool = False,
 
 ):
 
@@ -231,7 +234,7 @@ def chat(
     typer.secho("• Connected to index.", fg="green")
     paths = session.paths
     typer.secho(f"• Session folder: {paths['folder']}", fg="yellow")
-    typer.secho("Type your questions. Commands: :help, :q, :k <n>, :sources on|off, :deep on|off, :verbose on|off, :show session", fg="cyan")
+    typer.secho("Type your questions. Commands: :help, :q, :k <n>, :sources on|off, :deep on|off, :verbose on|off, :env, :show session", fg="cyan")
     typer.echo("")
     session.append_message("system", "Séance is listening. Ask about this codebase (or supported text files).")
     typer.secho("Séance is listening. Ask about this codebase (or supported text files).", fg="magenta")
@@ -254,11 +257,14 @@ def chat(
         q_tokens = question.split()
         q_deep = "--deep" in q_tokens
         q_verbose = "--verbose" in q_tokens
+        q_env = "--env" in q_tokens
 
         if q_deep:
             q_tokens = [t for t in q_tokens if t != "--deep"]
         if q_verbose:
             q_tokens = [t for t in q_tokens if t != "--verbose"]
+        if q_env:
+            q_tokens = [t for t in q_tokens if t != "--env"]
 
         question = " ".join(q_tokens).strip()
 
@@ -271,7 +277,14 @@ def chat(
             if q_verbose:
                 session.meta["verbose"] = True
                 typer.secho("• verbose = True (will apply to next question)", fg="green")
+            if q_env:
+                try:
+                    loaded = EnvUtils.load_env_for_tool()
+                    typer.secho(f"• env reloaded ({len(loaded)} sources)", fg="green")
+                except Exception as e:
+                    typer.secho(f"• env reload failed: {e}", fg="red")
             continue
+
 
         session.append_message("user", question)
         typer.secho("⋯ retrieving context …", fg="blue")
@@ -287,6 +300,13 @@ def chat(
             use_deep = True
         if q_verbose:
             active_verbose = True
+        if env_reload or q_env:
+            try:
+                loaded = EnvUtils.load_env_for_tool()
+                typer.secho(f"• env reloaded ({len(loaded)} sources)", fg="green")
+            except Exception as e:
+                typer.secho(f"• env reload failed: {e}", fg="red")
+
 
 
         # Which retriever?
@@ -428,6 +448,7 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
         typer.echo("  :sources on|off         Toggle source printing")
         typer.echo("  :deep on|off            Toggle deep (whole-file) context")
         typer.echo("  :verbose on|off         Toggle verbose agent logs")
+        typer.echo("  :env                    Reload .env now (no reindex)")
         typer.echo("  :show session           Print session folder paths")
         return
     
@@ -439,6 +460,13 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
             typer.secho(f"• deep = {val}", fg="green")
         else:
             typer.secho("Usage: :deep on|off", fg="red")
+        return
+    if parts[0] == ":env":
+        try:
+            loaded = EnvUtils.load_env_for_tool()
+            typer.secho(f"• env reloaded ({len(loaded)} sources)", fg="green")
+        except Exception as e:
+            typer.secho(f"• env reload failed: {e}", fg="red")
         return
     if parts[0] == ":verbose":
         if len(parts) >= 2 and parts[1] in ("on", "off"):
