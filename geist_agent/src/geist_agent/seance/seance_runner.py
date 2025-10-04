@@ -414,11 +414,31 @@ def chat(
             answer, mode, reason = generate_answer(
                 question, contexts, use_llm=not no_llm, model=model, verbose=True
             )
+            # Save verbose mode info into the transcript metadata
+            session.append_message(
+                "assistant",
+                answer,
+                meta={
+                    "sources": sources_out if session.info.show_sources else {},
+                    "verbose": {
+                        "retrieval_mode": mode_label,
+                        "matches": [f for (_cid, f, _s, _e, _txt) in contexts],
+                        "context_count": len(contexts),
+                        "file_count": len({f for (_cid, f, _s, _e, _txt) in contexts}),
+                    },
+                },
+            )
         else:
             with _spinner(f"{mode_label} | LLM (model={model_display}) is thinking…"):
                 answer, mode, reason = generate_answer(
                     question, contexts, use_llm=not no_llm, model=model, verbose=False
                 )
+            session.append_message(
+                "assistant",
+                answer,
+                meta={"sources": sources_out} if session.info.show_sources else {},
+            )
+
 
         typer.echo("")
         typer.secho("━━━━━━━━━━━━ RESPONSE ━━━━━━━━━━━━", fg="magenta")
