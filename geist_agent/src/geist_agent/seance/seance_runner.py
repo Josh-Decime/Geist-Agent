@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
-import io
 import re
 import typer
 
@@ -154,17 +153,6 @@ def _default_seance_name(root: Path) -> str:
     s = root.name.strip().lower().replace(" ", "_")
     s = re.sub(r"[^a-z0-9._-]+", "", s)
     return s or "seance"
-
-# --------- capture stdout (for --verbose transcript logging) --------
-@contextmanager
-def _capture_stdout():
-    old = sys.stdout
-    buf = io.StringIO()
-    sys.stdout = buf
-    try:
-        yield buf
-    finally:
-        sys.stdout = old
 
 # ─────────────────────────────────── connect ───────────────────────────────────
 @app.command("connect")
@@ -422,24 +410,16 @@ def chat(
                 fg="blue",
             )
 
-        # --- run the answer generation, capturing verbose stream when requested ---
-        verbose_text = ""
         if active_verbose:
-            with _capture_stdout() as cap:
-                answer, mode, reason = generate_answer(
-                    question, contexts, use_llm=not no_llm, model=model, verbose=True
-                )
-            verbose_text = cap.getvalue() or ""
-            # re-print the captured verbose stream back to the terminal so UX is unchanged
-            if verbose_text:
-                typer.echo(verbose_text)
+            answer, mode, reason = generate_answer(
+                question, contexts, use_llm=not no_llm, model=model, verbose=True
+            )
         else:
             with _spinner(f"{mode_label} | LLM (model={model_display}) is thinking…"):
                 answer, mode, reason = generate_answer(
                     question, contexts, use_llm=not no_llm, model=model, verbose=False
                 )
 
-        # --- terminal answer block (unchanged visual) ---
         typer.echo("")
         typer.secho("━━━━━━━━━━━━ RESPONSE ━━━━━━━━━━━━", fg="magenta")
         typer.echo(answer)
@@ -451,21 +431,7 @@ def chat(
             fg=("green" if mode == "llm" else "yellow"),
         )
 
-        # --- single append to transcript; include verbose log when present ---
-        meta_out = {}
-        if session.info.show_sources:
-            meta_out["sources"] = sources_out
-        if verbose_text:
-            meta_out["verbose_log"] = verbose_text
-            # (optional) add a few structured details for quick skim
-            meta_out["verbose_meta"] = {
-                "retrieval_mode": mode_label,
-                "context_count": len(contexts),
-                "file_count": len({f for (_cid, f, _s, _e, _txt) in contexts}),
-            }
-
-        session.append_message("assistant", answer, meta=meta_out)
-
+        session.append_message("assistant", answer, meta={"sources": sources_out} if session.info.show_sources else {})
 
     typer.secho("\nSession closed. Transcript saved.", fg="green")
     typer.secho(f"  • {paths['transcript']}", fg="yellow")
