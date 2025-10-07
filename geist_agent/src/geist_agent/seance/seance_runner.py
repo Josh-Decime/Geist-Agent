@@ -9,7 +9,8 @@ import typer
 import sys
 import threading
 import time
-from contextlib import contextmanager
+import io
+from contextlib import contextmanager, redirect_stdout
 
 from geist_agent.utils import ReportUtils, walk_files_compat as walk_files, EnvUtils
 
@@ -153,6 +154,38 @@ def _default_seance_name(root: Path) -> str:
     s = root.name.strip().lower().replace(" ", "_")
     s = re.sub(r"[^a-z0-9._-]+", "", s)
     return s or "seance"
+
+# --------- tee stdout (print live and capture) --------
+@contextmanager
+def _tee_stdout():
+    """
+    Duplicate stdout to both the terminal and a buffer so --verbose
+    logs appear live AND are captured for the transcript.
+    """
+    old = sys.stdout
+    buf = io.StringIO()
+
+    class _Tee(io.TextIOBase):
+        def write(self, s):
+            try:
+                old.write(s)
+                old.flush()
+            except Exception:
+                pass
+            buf.write(s)
+            return len(s)
+        def flush(self):
+            try:
+                old.flush()
+            except Exception:
+                pass
+            buf.flush()
+
+    sys.stdout = _Tee()
+    try:
+        yield buf
+    finally:
+        sys.stdout = old
 
 # ─────────────────────────────────── connect ───────────────────────────────────
 @app.command("connect")
@@ -410,10 +443,14 @@ def chat(
                 fg="blue",
             )
 
+        # --- answer generation; tee stdout so verbose prints live AND is captured ---
+        verbose_text = ""
         if active_verbose:
-            answer, mode, reason = generate_answer(
-                question, contexts, use_llm=not no_llm, model=model, verbose=True
-            )
+            with _tee_stdout() as cap:
+                answer, mode, reason = generate_answer(
+                    question, contexts, use_llm=not no_llm, model=model, verbose=True
+                )
+            verbose_text = cap.getvalue() or ""
         else:
             with _spinner(f"{mode_label} | LLM (model={model_display}) is thinking…"):
                 answer, mode, reason = generate_answer(
@@ -431,7 +468,11 @@ def chat(
             fg=("green" if mode == "llm" else "yellow"),
         )
 
-        session.append_message("assistant", answer, meta={"sources": sources_out} if session.info.show_sources else {})
+        meta_out = {"sources": sources_out} if session.info.show_sources else {}
+        if active_verbose and verbose_text:
+            meta_out["verbose_log"] = verbose_text
+
+        session.append_message("assistant", answer, meta=meta_out)
 
     typer.secho("\nSession closed. Transcript saved.", fg="green")
     typer.secho(f"  • {paths['transcript']}", fg="yellow")

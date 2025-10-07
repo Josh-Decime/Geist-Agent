@@ -64,28 +64,49 @@ class SeanceSession:
         ]
         self.transcript_path.write_text("\n".join(header), encoding="utf-8")
 
-    def append_message(self, role: Role, content: str, meta: Optional[Dict] = None):
-        meta = meta or {}
-        rec = {"ts": time.time(), "role": role, "content": content, "meta": meta}
-        with self.messages_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+def append_message(self, role: Role, content: str, meta: Optional[Dict] = None):
+    meta = meta or {}
+    rec = {"ts": time.time(), "role": role, "content": content, "meta": meta}
+    with self.messages_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
-        lines = []
-        if role == "user":
-            lines.append(f"**You:** {content}")
-        elif role == "assistant":
-            lines.append(f"**Seance:** {content}")
-        else:
-            lines.append(f"**{role.title()}:** {content}")
+    lines = []
+    if role == "user":
+        lines.append(f"**You:** {content}")
+    elif role == "assistant":
+        lines.append(f"**Seance:** {content}")
+    else:
+        lines.append(f"**{role.title()}:** {content}")
 
-        if "sources" in meta and isinstance(meta["sources"], list) and meta["sources"]:
-            lines.append("")
-            lines.append("_Sources:_")
-            for s in meta["sources"]:
-                lines.append(f"- `{s}`")
+    # Sources block (existing behavior)
+    if "sources" in meta and isinstance(meta["sources"], list) and meta["sources"]:
         lines.append("")
-        with self.transcript_path.open("a", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+        lines.append("Sources:")
+        for s in meta["sources"]:
+            lines.append(f"- {s}")
+
+    # verbose log block (if runner provided it via meta)
+    # Accept several common keys to be forgiving.
+    verbose_text = None
+    for key in ("verbose_log", "verbose", "logs", "debug_log"):
+        v = meta.get(key)
+        if isinstance(v, str) and v.strip():
+            verbose_text = v
+            break
+
+    if verbose_text:
+        lines.append("")
+        lines.append("<details><summary><strong>Verbose output</strong></summary>")
+        lines.append("")
+        lines.append("```text")
+        lines.append(verbose_text.rstrip())
+        lines.append("```")
+        lines.append("")
+        lines.append("</details>")
+
+    lines.append("")
+    with self.transcript_path.open("a", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
 
     def set_k(self, k: int):
         self.info.k = k
