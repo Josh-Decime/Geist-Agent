@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Optional, Literal
 import json
 import time
+import re
 
 Role = Literal["user", "assistant", "system"]
 
@@ -19,6 +20,19 @@ class SessionInfo:
     meta_json: str
     k: int
     show_sources: bool
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+def _clean_log(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    # 1) turn carriage-return updates into real newlines (progress bars/spinners)
+    s = s.replace("\r", "\n")
+    # 2) strip ANSI color/formatting codes
+    s = ANSI_RE.sub("", s)
+    # 3) collapse excessive blank lines
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
 
 class SeanceSession:
     """
@@ -91,7 +105,7 @@ class SeanceSession:
         for key in ("verbose_log", "verbose", "logs", "debug_log"):
             v = meta.get(key)
             if isinstance(v, str) and v.strip():
-                verbose_text = v
+                verbose_text = _clean_log(v)  # <<< clean it
                 break
 
         if verbose_text:
@@ -99,10 +113,11 @@ class SeanceSession:
             lines.append("<details><summary><strong>Verbose output</strong></summary>")
             lines.append("")
             lines.append("```text")
-            lines.append(verbose_text.rstrip())
+            lines.append(verbose_text)
             lines.append("```")
             lines.append("")
             lines.append("</details>")
+
 
         lines.append("")
         with self.transcript_path.open("a", encoding="utf-8") as f:
