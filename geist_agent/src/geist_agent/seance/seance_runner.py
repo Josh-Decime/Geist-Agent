@@ -25,6 +25,22 @@ from .seance_common import tokenize
 
 app = typer.Typer(help="Ask questions about your codebase (or any supported text files).")
 
+# --- Windows console ANSI fix (safe no-op on non-Windows) ---
+try:
+    import colorama
+    colorama.just_fix_windows_console()
+except Exception:
+    pass
+
+# --- optional ANSI stripper for terminal echo (we'll keep transcript clean in SeanceSession) ---
+import re as _re_ansi
+_ANSI_RE = _re_ansi.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+def _strip_ansi(s: str) -> str:
+    if not isinstance(s, str):
+        return ""
+    return _ANSI_RE.sub("", s)
+
 # -------- env controls --------
 def _env_int(name: str, default: int) -> int:
     try:
@@ -446,11 +462,22 @@ def chat(
         # --- answer generation; tee stdout so verbose prints live AND is captured ---
         verbose_text = ""
         if active_verbose:
-            with _tee_stdout() as cap:
+            # Capture everything printed by generate_answer(verbose=True)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
                 answer, mode, reason = generate_answer(
                     question, contexts, use_llm=not no_llm, model=model, verbose=True
                 )
-            verbose_text = cap.getvalue() or ""
+            verbose_text = buf.getvalue() or ""
+
+            # Echo to terminal after run:
+            # - default: show raw (with colors) for a nice terminal view
+            # - if you set SEANCE_STRIP_ANSI_IN_TERMINAL=1 in .env, we’ll strip before echoing
+            if verbose_text:
+                if os.getenv("SEANCE_STRIP_ANSI_IN_TERMINAL", "").strip().lower() in ("1","true","yes","on"):
+                    typer.echo(_strip_ansi(verbose_text))
+                else:
+                    typer.echo(verbose_text)
         else:
             with _spinner(f"{mode_label} | LLM (model={model_display}) is thinking…"):
                 answer, mode, reason = generate_answer(
