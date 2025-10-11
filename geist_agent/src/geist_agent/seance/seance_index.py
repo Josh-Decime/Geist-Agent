@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, Optional
 import json
 import time
+import os
+from typing import Iterable
 
 from geist_agent.utils import PathUtils
 
@@ -31,6 +33,75 @@ class Manifest:
     updated_at: float
     files: Dict[str, str]         # file -> file_hash
     chunks: Dict[str, IndexedChunk]  # chunk_id -> metadata
+
+def _parse_list_env(var_name: str) -> list[str]:
+    """Split a comma/space-separated env var into a clean lowercased list."""
+    raw = os.getenv(var_name, "") or ""
+    parts = [p.strip() for chunk in raw.split(",") for p in chunk.split()]
+    return [p.lower() for p in parts if p]
+
+def _normalize_exts(items: Iterable[str]) -> set[str]:
+    """
+    Normalize tokens to extensions (keep 'dockerfile' special).
+    If token doesn't start with '.', prepend it.
+    """
+    out: set[str] = set()
+    for it in items or []:
+        if not it:
+            continue
+        if it.startswith(".") or it == "dockerfile":
+            out.add(it)
+        else:
+            out.add("." + it)
+    return out
+
+def _env_filters():
+    """
+    Compute include/ext filters and ignore globs from env.
+      - SEANCE_INCLUDE_EXTS ⇒ allowlist (wins)
+      - SEANCE_EXCLUDE_EXTS ⇒ blocklist (applied if allowlist not set)
+      - SEANCE_IGNORE_GLOBS ⇒ path globs to skip
+    """
+    include_exts = _normalize_exts(_parse_list_env("SEANCE_INCLUDE_EXTS"))
+    exclude_exts = _normalize_exts(_parse_list_env("SEANCE_EXCLUDE_EXTS"))
+    ignore_globs = _parse_list_env("SEANCE_IGNORE_GLOBS")
+    return include_exts, exclude_exts, ignore_globs
+
+def _skip_by_env(rel_posix: str, filename: str, ext: str,
+                 include_exts: set[str], exclude_exts: set[str], ignore_globs: list[str]) -> bool:
+    """
+    Decide if a file should be skipped by env-based rules.
+      - include_exts: if non-empty, only files whose ext/name is in it are allowed
+      - exclude_exts: if ext/name is listed, skip
+      - ignore_globs: any glob match on rel path ⇒ skip
+    """
+    # allow special filenames (like Dockerfile) by comparing basename lowercased
+    special_name = filename.lower()
+
+    # include allowlist takes precedence
+    if include_exts:
+        if ext in include_exts or special_name in include_exts:
+            pass
+        else:
+            return True
+
+    # exclude blocklist (only when include list not set)
+    if not include_exts and (ext in exclude_exts or special_name in exclude_exts):
+        return True
+
+    if ignore_globs:
+        p = PurePosixPath(rel_posix)
+        for pat in ignore_globs:
+            # match is case-sensitive on posix path; patterns are lowercased above
+            # ensure we compare on lowercased string form
+            if p.as_posix().lower().startswith("/") and not pat.startswith("/"):
+                # not expected since we feed rel_posix; safe no-op
+                pass
+            if p.match(pat):
+                return True
+
+    return False
+
 
 # ──────────────────────────────── Paths & IO ───────────────────────────────────
 
@@ -98,6 +169,8 @@ def build_index(
     """
     sr = Path(root).resolve()
     man = connect(sr, name)
+    # Read env-based scan filters
+    include_exts, exclude_exts, ignore_globs = _env_filters()
 
     # Load existing inverted index if present
     inverted: Dict[str, Dict[str, int]] = {}
@@ -119,6 +192,20 @@ def build_index(
     for p in sr.rglob("*"):
         if not p.is_file():
             continue
+        rel = p.relative_to(sr).as_posix()
+        filename = p.name
+        ext = p.suffix.lower()
+
+        # Env-based skipping (include / exclude / globs)
+        if _skip_by_env(rel, filename, ext, include_exts, exclude_exts, ignore_globs):
+            continue
+
+        # (existing checks)
+        if not is_supported(p):
+            continue
+        if should_ignore(p, sr):
+            continue
+
         if not is_supported(p):
             continue
         if should_ignore(p, sr):
