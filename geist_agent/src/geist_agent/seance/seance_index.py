@@ -186,6 +186,16 @@ def build_index(
 
     if verbose:
         print(f"▶ Scanning: {sr}")
+        # One-time summary of env filters
+        inc_msg = sorted(include_exts) if include_exts else None
+        exc_msg = sorted(exclude_exts) if exclude_exts else []
+        ign_msg = ignore_globs or []
+        print(
+            "• Filters: "
+            f"include_exts={inc_msg if inc_msg is not None else 'DEFAULT'} | "
+            f"exclude_exts={exc_msg} | "
+            f"ignore_globs={ign_msg}"
+        )
     count_files = 0
     updated_chunks = 0
 
@@ -206,12 +216,6 @@ def build_index(
         if should_ignore(p, sr):
             continue
 
-        if not is_supported(p):
-            continue
-        if should_ignore(p, sr):
-            continue
-
-        rel = p.relative_to(sr).as_posix()
         count_files += 1
 
         fh = file_hash(p)
