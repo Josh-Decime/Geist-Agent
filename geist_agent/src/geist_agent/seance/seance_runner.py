@@ -12,7 +12,7 @@ import time
 import io
 from contextlib import contextmanager, redirect_stdout
 
-from geist_agent.utils import ReportUtils, walk_files_compat as walk_files, EnvUtils
+from geist_agent.utils import EnvUtils
 
 from .seance_index import (
     connect as seance_connect,
@@ -21,7 +21,6 @@ from .seance_index import (
 )
 from .seance_query import retrieve, generate_answer
 from .seance_session import SeanceSession
-from .seance_common import tokenize
 
 app = typer.Typer(help="Ask questions about your codebase (or any supported text files).")
 
@@ -53,12 +52,6 @@ def _env_bool(name: str, default: bool) -> bool:
     if v in ("1", "true", "yes", "on"): return True
     if v in ("0", "false", "no", "off"): return False
     return default
-
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, "").strip() or default)
-    except Exception:
-        return default
 
 def _expand_to_deep_contexts(
     contexts: list[tuple[str, str, int, int, str]],
@@ -170,38 +163,6 @@ def _default_seance_name(root: Path) -> str:
     s = root.name.strip().lower().replace(" ", "_")
     s = re.sub(r"[^a-z0-9._-]+", "", s)
     return s or "seance"
-
-# --------- tee stdout (print live and capture) --------
-@contextmanager
-def _tee_stdout():
-    """
-    Duplicate stdout to both the terminal and a buffer so --verbose
-    logs appear live AND are captured for the transcript.
-    """
-    old = sys.stdout
-    buf = io.StringIO()
-
-    class _Tee(io.TextIOBase):
-        def write(self, s):
-            try:
-                old.write(s)
-                old.flush()
-            except Exception:
-                pass
-            buf.write(s)
-            return len(s)
-        def flush(self):
-            try:
-                old.flush()
-            except Exception:
-                pass
-            buf.flush()
-
-    sys.stdout = _Tee()
-    try:
-        yield buf
-    finally:
-        sys.stdout = old
 
 # ─────────────────────────────────── connect ───────────────────────────────────
 @app.command("connect")
