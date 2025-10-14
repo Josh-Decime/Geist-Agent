@@ -164,6 +164,47 @@ def _default_seance_name(root: Path) -> str:
     s = re.sub(r"[^a-z0-9._-]+", "", s)
     return s or "seance"
 
+# --------- tee stdout (print live and capture) --------
+from contextlib import contextmanager
+import io
+
+@contextmanager
+def _tee_stdout():
+    """
+    Duplicate stdout to both the terminal and a buffer so --verbose logs
+    appear live AND are captured for the transcript.
+
+    If SEANCE_STRIP_ANSI_IN_TERMINAL is truthy, strip ANSI for the terminal
+    while keeping the raw text in the buffer.
+    """
+    old = sys.stdout
+    buf = io.StringIO()
+    strip_for_terminal = os.getenv("SEANCE_STRIP_ANSI_IN_TERMINAL", "").strip().lower() in ("1", "true", "yes", "on")
+
+    class _Tee(io.TextIOBase):
+        def write(self, s):
+            # live echo to terminal
+            try:
+                old.write(_strip_ansi(s) if strip_for_terminal else s)
+                old.flush()
+            except Exception:
+                pass
+            # always keep raw in buffer
+            buf.write(s)
+            return len(s)
+        def flush(self):
+            try:
+                old.flush()
+            except Exception:
+                pass
+            buf.flush()
+
+    sys.stdout = _Tee()
+    try:
+        yield buf
+    finally:
+        sys.stdout = old
+
 # ─────────────────────────────────── connect ───────────────────────────────────
 @app.command("connect")
 def connect(
@@ -423,22 +464,12 @@ def chat(
         # --- answer generation; tee stdout so verbose prints live AND is captured ---
         verbose_text = ""
         if active_verbose:
-            # Capture everything printed by generate_answer(verbose=True)
-            buf = io.StringIO()
-            with redirect_stdout(buf):
+            # Stream to terminal immediately AND capture for transcript
+            with _tee_stdout() as cap:
                 answer, mode, reason = generate_answer(
                     question, contexts, use_llm=not no_llm, model=model, verbose=True
                 )
-            verbose_text = buf.getvalue() or ""
-
-            # Echo to terminal after run:
-            # - default: show raw (with colors) for a nice terminal view
-            # - if you set SEANCE_STRIP_ANSI_IN_TERMINAL=1 in .env, we’ll strip before echoing
-            if verbose_text:
-                if os.getenv("SEANCE_STRIP_ANSI_IN_TERMINAL", "").strip().lower() in ("1","true","yes","on"):
-                    typer.echo(_strip_ansi(verbose_text))
-                else:
-                    typer.echo(verbose_text)
+            verbose_text = cap.getvalue() or ""
         else:
             with _spinner(f"{mode_label} | LLM (model={model_display}) is thinking…"):
                 answer, mode, reason = generate_answer(
