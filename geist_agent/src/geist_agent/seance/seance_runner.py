@@ -32,8 +32,7 @@ except Exception:
     pass
 
 # --- optional ANSI stripper for terminal echo (we'll keep transcript clean in SeanceSession) ---
-import re as _re_ansi
-_ANSI_RE = _re_ansi.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 def _strip_ansi(s: str) -> str:
     if not isinstance(s, str):
@@ -216,9 +215,6 @@ def _default_seance_name(root: Path) -> str:
     return s or "seance"
 
 # --------- tee stdout (print live and capture) --------
-from contextlib import contextmanager
-import io
-
 @contextmanager
 def _tee_stdout():
     """
@@ -429,7 +425,6 @@ def chat(
         retriever = (os.getenv("SEANCE_RETRIEVER") or "bm25").strip().lower()
         retriever = "bm25" if retriever not in ("bm25", "jaccard") else retriever
 
-        # Candidate widening
         # Candidate widening
         widen     = _env_int("SEANCE_WIDEN", 2)          # default mode multiplier
         deep_mult = _env_int("SEANCE_DEEP_MULT", 4)      # deep mode multiplier
