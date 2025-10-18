@@ -1,12 +1,10 @@
 # src/geist_agent/seance/seance_query.py 
 from __future__ import annotations
 
+import os
+import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-import json
-import os
-import textwrap
-
 from .seance_index import load_manifest, index_path
 from .seance_common import tokenize
 from .seance_agent import SeanceAgent

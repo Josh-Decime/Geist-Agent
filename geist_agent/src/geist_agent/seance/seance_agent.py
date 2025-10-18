@@ -1,10 +1,9 @@
 # src/geist_agent/seance/seance_agent.py 
 from __future__ import annotations
 
-from typing import List, Tuple, Optional
 import os
 import textwrap
-
+from typing import List, Tuple, Optional
 from crewai import Agent, Crew, Task, Process
 
 # Try both import styles so we work across CrewAI versions

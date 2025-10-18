@@ -1,11 +1,11 @@
 # src/geist_agent/seance/seance_common.py 
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Optional
-import hashlib
-import re
 
 # ───────────────────────────── Supported filetypes ─────────────────────────────
 

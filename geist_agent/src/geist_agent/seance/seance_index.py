@@ -1,15 +1,13 @@
 # src/geist_agent/seance/seance_index.py 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from pathlib import Path, PurePosixPath
 import json
 import time
 import os
+from dataclasses import dataclass, asdict
+from pathlib import Path, PurePosixPath
 from typing import Dict, Optional, Iterable
-
 from geist_agent.utils import PathUtils
-
 from .seance_common import (
     is_supported, should_ignore, read_text_safely,
     tokenize, greedy_line_chunk, file_hash, make_chunk_id

@@ -1,19 +1,16 @@
 # src/geist_agent/seance/seance_runner.py
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import re
 import typer
-
 import sys
 import threading
 import time
 import io
-from contextlib import contextmanager, redirect_stdout
-
+from pathlib import Path
+from contextlib import contextmanager
 from geist_agent.utils import EnvUtils
-
 from .seance_index import (
     connect as seance_connect,
     build_index as seance_build_index,
@@ -437,7 +434,6 @@ def chat(
         else:
             retrieve_k = session.info.k * widen
 
-        # <-- this was missing
         matches = retrieve(root, name, question, k=retrieve_k)
 
         man = load_manifest(root, name)  # refresh

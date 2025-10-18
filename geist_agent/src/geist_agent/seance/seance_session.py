@@ -1,12 +1,12 @@
 # src/geist_agent/seance/seance_session.py 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from pathlib import Path
-from typing import Dict, Optional, Literal
 import json
 import time
 import re
+from dataclasses import dataclass, asdict
+from pathlib import Path
+from typing import Dict, Optional, Literal
 
 Role = Literal["user", "assistant", "system"]
 
