@@ -1,14 +1,10 @@
 ﻿# src/geist_agent/unveil/unveil_tools.py
 from __future__ import annotations
 from pathlib import Path
-from typing import Iterable, List, Dict, Tuple, Optional
-import os, re, json
+from typing import Any, List, Dict, Tuple, Optional
+import re
 from collections import Counter, defaultdict
-
 from geist_agent.utils import ReportUtils, PathUtils
-
-from typing import Any
-
 
 # ---------- formatting helpers (API, summaries) ----------
 def _format_api_list(api_val: Any, max_items: int = 12) -> list[str]:

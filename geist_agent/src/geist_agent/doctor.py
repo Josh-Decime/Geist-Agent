@@ -3,10 +3,7 @@ from __future__ import annotations
 import os, json, sys, urllib.request
 from dataclasses import dataclass
 from importlib.metadata import version, PackageNotFoundError
-from pathlib import Path
 from typing import Any, Callable, Dict, List
-
-import typer
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
