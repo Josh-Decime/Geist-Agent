@@ -1,10 +1,11 @@
-# src/geist_agent/seance/seance_query.py 
+# src/geist_agent/seance/seance_query.py
 from __future__ import annotations
 
 import os
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
+
 from .seance_index import load_manifest, index_path
 from .seance_common import tokenize
 from .seance_agent import SeanceAgent
@@ -12,10 +13,12 @@ from .seance_agent import SeanceAgent
 # ─────────────────────────────── Retrieval ─────────────────────────────────────
 
 def _score_jaccard(query_tokens: List[str], chunk_tokens: List[str]) -> float:
+    """Legacy/simple Jaccard score (kept for compatibility)."""
     a, b = set(query_tokens), set(chunk_tokens)
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
 
 def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, float]]:
     """
@@ -32,12 +35,22 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
 
     inverted: Dict[str, Dict[str, int]] = json.loads(ip.read_text(encoding="utf-8"))
 
+    # Tokenize the user query
     qtokens = tokenize(query)
+
+    # Optional debug logging (guarded by env)
+    if (os.getenv("SEANCE_RETRIEVAL_LOG", "").strip().lower() in ("1", "true", "yes", "on")):
+        print(f"• Tokens: {qtokens}")
+        print("• Symbolish tokens:",
+              [t for t in qtokens
+               if "_" in t or (any(c.islower() for c in t) and any(c.isupper() for c in t)) or len(t) >= 12])
+
     retriever = (os.getenv("SEANCE_RETRIEVER") or "bm25").strip().lower()
     retriever = "bm25" if retriever not in ("bm25", "jaccard") else retriever
 
+    # ----- BM25 (default) -----
     if retriever == "bm25":
-        # ----- BM25 -----
+        # Build doc lengths
         doc_len: Dict[str, int] = {}
         for _term, postings in inverted.items():
             for cid, tf in postings.items():
@@ -49,6 +62,7 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
         N = len(doc_len)
         avgdl = (sum(doc_len.values()) / float(N)) if N > 0 else 1.0
 
+        # Tunables (BM25)
         try:
             k1 = float(os.getenv("SEANCE_BM25_K1", "1.2"))
         except ValueError:
@@ -58,6 +72,7 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
         except ValueError:
             b = 0.75
 
+        # IDF
         import math
         idf: Dict[str, float] = {}
         for qt in set(qtokens):
@@ -67,6 +82,7 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
             n_t = len(postings)  # docs containing term
             idf[qt] = math.log(1.0 + (N - n_t + 0.5) / (n_t + 0.5))
 
+        # Base BM25 scores
         scores: Dict[str, float] = {}
         for qt in set(qtokens):
             postings = inverted.get(qt)
@@ -79,8 +95,51 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
                 part = qt_idf * ((tf * (k1 + 1.0)) / denom)
                 scores[cid] = scores.get(cid, 0.0) + part
 
+        # ---------- identifier-aware presence boost (helps code symbols) ----------
+        # Treat underscore/camelCase/long tokens as code identifiers and boost their presence.
+        symbolish: List[str] = []
+        for qt in set(qtokens):
+            if "_" in qt or (any(c.islower() for c in qt) and any(c.isupper() for c in qt)) or len(qt) >= 12:
+                symbolish.append(qt)
+
+        try:
+            kw_boost = float(os.getenv("SEANCE_KEYWORD_BOOST", "6.0"))
+        except Exception:
+            kw_boost = 6.0
+
+        presence: Dict[str, float] = {}
+        for qt in set(qtokens):
+            postings = inverted.get(qt)
+            if not postings:
+                continue
+            weight = 2.0 if qt in symbolish else 1.0
+            for cid, _tf in postings.items():
+                presence[cid] = presence.get(cid, 0.0) + weight
+
+        for cid, pres in presence.items():
+            scores[cid] = scores.get(cid, 0.0) + pres * kw_boost
+
+        # Sort and guard-rail
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-        return ranked[:k]
+        top = ranked[:k]
+
+        # If none of the top-k actually contains ANY query token (rare), re-rank by symbol hits only
+        def _chunk_has_any_query_token(_cid: str) -> bool:
+            for qt in set(qtokens):
+                if inverted.get(qt) and _cid in inverted[qt]:
+                    return True
+            return False
+
+        if top and not any(_chunk_has_any_query_token(cid) for cid, _ in top):
+            pool: Dict[str, float] = {}
+            for qt in symbolish or set(qtokens):
+                postings = inverted.get(qt) or {}
+                for cid, tf in postings.items():
+                    pool[cid] = pool.get(cid, 0.0) + float(tf)
+            if pool:
+                return sorted(pool.items(), key=lambda x: x[1], reverse=True)[:k]
+
+        return top
 
     # ----- Jaccard (legacy/simple) -----
     candidate_scores: Dict[str, int] = {}
@@ -107,7 +166,7 @@ def generate_answer(
     contexts: List[Tuple[str, str, int, int, str]],
     use_llm: bool = True,
     model: Optional[str] = None,
-    timeout: int = 30,          # kept for signature compatibility (unused here)
+    timeout: int = 30,          # kept for signature compatibility (unused)
     verbose: bool = False,      # let runner control verbosity
 ) -> Tuple[str, str, Optional[str]]:
     """
@@ -127,9 +186,10 @@ def generate_answer(
     except Exception as e:
         return _fallback_answer(question, contexts), "fallback", f"LLM error: {e.__class__.__name__}: {e}"
 
+
 def _fallback_answer(question: str, contexts: List[Tuple[str, str, int, int, str]]) -> str:
     bullets = []
-    for (_, file, s, e, preview) in contexts:
+    for (_cid, file, s, e, preview) in contexts:
         snippet = preview.strip().splitlines()[:6]
         bullets.append(f"- {file}:{s}-{e}\n  " + "\n  ".join(snippet))
     src_lines = "\n".join(bullets)

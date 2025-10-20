@@ -488,6 +488,13 @@ def chat(
             diversify = _env_bool("SEANCE_DIVERSIFY_FILES", True)
             min_unique = _env_int("SEANCE_MIN_UNIQUE_FILES", max(1, min(5, session.info.k)))
 
+            # If the user likely asked about a code symbol (underscores or CamelCase),
+            # allow concentrating on the best-matching file instead of forcing diversity.
+            symbol_like = ("_" in question) or any(c.isupper() for c in question if c.isalpha())
+            if symbol_like and session.info.k <= 8:
+                diversify = False
+                min_unique = 1
+
             seen_files = set()
             for cid, _score in matches:
                 meta = man.chunks.get(cid)
