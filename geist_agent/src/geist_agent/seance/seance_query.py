@@ -38,6 +38,16 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
     # Tokenize the user query
     qtokens = tokenize(query)
 
+        # --- retrieval debug: show missing tokens and the index size ---
+    if (os.getenv("SEANCE_RETRIEVAL_LOG", "").strip().lower() in ("1", "true", "yes", "on")):
+        total_tokens = len(inverted)
+        missing = [t for t in set(qtokens) if t not in inverted]
+        if missing:
+            print(f"• Missing in index: {missing} (index terms={total_tokens})")
+        else:
+            print(f"• All query tokens present (index terms={total_tokens})")
+
+
     # Optional debug logging (guarded by env)
     if (os.getenv("SEANCE_RETRIEVAL_LOG", "").strip().lower() in ("1", "true", "yes", "on")):
         print(f"• Tokens: {qtokens}")
@@ -138,6 +148,24 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
                     pool[cid] = pool.get(cid, 0.0) + float(tf)
             if pool:
                 return sorted(pool.items(), key=lambda x: x[1], reverse=True)[:k]
+
+
+        if (os.getenv("SEANCE_RETRIEVAL_LOG", "").strip().lower() in ("1", "true", "yes", "on")):
+            # Map top candidates to files (best-effort)
+            try:
+                man = load_manifest(root, name)
+                if man:
+                    files = []
+                    for cid, sc in top:
+                        meta = man.chunks.get(cid)
+                        if meta:
+                            files.append(f"{meta.file}:{meta.start_line}-{meta.end_line} ({sc:.4f})")
+                    if files:
+                        print("• Top candidates:")
+                        for line in files:
+                            print("  -", line)
+            except Exception as _e:
+                pass
 
         return top
 

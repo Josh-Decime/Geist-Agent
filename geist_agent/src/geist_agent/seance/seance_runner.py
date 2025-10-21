@@ -8,6 +8,8 @@ import sys
 import threading
 import time
 import io
+import json
+from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 from contextlib import contextmanager
 from geist_agent.utils import EnvUtils
@@ -248,6 +250,53 @@ def _tee_stdout():
         yield buf
     finally:
         sys.stdout = old
+
+# ─────────────────────────────────── debug-token ───────────────────────────────
+@app.command("debug-token")
+def debug_token(
+    token: str = typer.Argument(..., help="Literal token to inspect (case-insensitive)"),
+    path: str = typer.Option(".", help="Root path of the filebase"),
+    name: str = typer.Option(None, help="Seance name (defaults to folder name)"),
+    limit: int = typer.Option(40, help="Max postings to print"),
+):
+    """
+    Print postings for a token from the inverted index and map them to files/lines via the manifest.
+    Helps verify whether a symbol (e.g., 'generate_filename') is actually indexable under the current root.
+    """
+    root = Path(path).resolve()
+    if name is None:
+        name = _default_seance_name(root)
+
+    ip = index_path(root, name)
+    man = load_manifest(root, name)
+    if not ip.exists() or man is None:
+        typer.secho("No index/manifest found. Run `poltergeist seance index` first.", fg="red")
+        raise typer.Exit(code=1)
+
+    try:
+        inverted: Dict[str, Dict[str, int]] = json.loads(ip.read_text(encoding="utf-8"))
+    except Exception as e:
+        typer.secho(f"Failed to read inverted index: {e}", fg="red")
+        raise typer.Exit(code=1)
+
+    qt = token.strip().lower()
+    postings = inverted.get(qt)
+    if not postings:
+        typer.secho(f"Token '{qt}' has 0 postings.", fg="yellow")
+        # Tip: if this is unexpected, confirm that the file(s) containing the token are under --path
+        # and that the extension is included by your scan filters (.py is on by default).
+        raise typer.Exit(code=0)
+
+    typer.secho(f"Token '{qt}': {len(postings)} postings", fg="green")
+    shown = 0
+    for cid, tf in postings.items():
+        meta = man.chunks.get(cid)
+        if not meta:
+            continue
+        typer.echo(f"- {meta.file}:{meta.start_line}-{meta.end_line}  (tf={tf})")
+        shown += 1
+        if shown >= limit:
+            break
 
 # ─────────────────────────────────── connect ───────────────────────────────────
 @app.command("connect")
@@ -655,5 +704,36 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
         for k, v in p.items():
             typer.echo(f"  {k:10}: {v}")
         return
+    
+    if parts[0] == ":debug" and len(parts) >= 3 and parts[1] == "token":
+        word = parts[2].strip().lower()
+        root = Path(session.info.root).resolve()
+        name = session.info.slug
+        ip = index_path(root, name)
+        man = load_manifest(root, name)
+        if not ip.exists() or man is None:
+            typer.secho("No index/manifest found. Run `poltergeist seance index`.", fg="red")
+            return
+        try:
+            inverted = json.loads(ip.read_text(encoding="utf-8"))
+        except Exception as e:
+            typer.secho(f"Failed to read inverted index: {e}", fg="red")
+            return
+        postings = inverted.get(word) or {}
+        if not postings:
+            typer.secho(f"Token '{word}' has 0 postings.", fg="yellow")
+            return
+        limit = 40
+        typer.secho(f"Token '{word}': {len(postings)} postings", fg="green")
+        shown = 0
+        for cid, tf in postings.items():
+            meta = man.chunks.get(cid)
+            if meta:
+                typer.echo(f"- {meta.file}:{meta.start_line}-{meta.end_line} (tf={tf})")
+                shown += 1
+                if shown >= limit:
+                    break
+        return
+
 
     typer.secho(f"Unknown command: {cmd}", fg="red")
