@@ -375,6 +375,16 @@ def chat(
     sdir = seance_dir(root, name)
     session = SeanceSession(sdir, name=name, slug=name, k=k, show_sources=show_sources)
 
+        # Force-correct the repo root stored in the session metadata so REPL/debug tools use the real codebase path.
+    try:
+        session.info.root = str(root)   # actual repo root (Path(path).resolve()) from the active chat
+        # persist the corrected meta
+        if hasattr(session, "_rewrite_meta"):
+            session._rewrite_meta()
+    except Exception:
+        # non-fatal; debug helpers will still try a CWD fallback
+        pass
+
     typer.secho("• Connected to index.", fg="green")
     paths = session.paths
     typer.secho(f"• Session folder: {paths['folder']}", fg="yellow")
@@ -707,22 +717,44 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
     
     if parts[0] == ":debug" and len(parts) >= 3 and parts[1] == "token":
         word = parts[2].strip().lower()
-        root = Path(session.info.root).resolve()
-        name = session.info.slug
-        ip = index_path(root, name)
-        man = load_manifest(root, name)
+
+        # Prefer the true codebase root; if missing, fall back to CWD.
+        try:
+            root = Path(session.info.root).resolve()
+        except Exception:
+            root = Path(".").resolve()
+
+        # SessionInfo uses 'name' (no 'slug' attribute)
+        try:
+            name = session.info.name
+        except Exception:
+            # last resort — match what chat created the session with
+            name = "seance"
+
+        # Load index + manifest
+        try:
+            ip = index_path(root, name)
+            man = load_manifest(root, name)
+        except Exception as e:
+            typer.secho(f"Index/manifest path error: {e}", fg="red")
+            return
+
         if not ip.exists() or man is None:
             typer.secho("No index/manifest found. Run `poltergeist seance index`.", fg="red")
             return
+
+        # Read inverted index
         try:
             inverted = json.loads(ip.read_text(encoding="utf-8"))
         except Exception as e:
             typer.secho(f"Failed to read inverted index: {e}", fg="red")
             return
+
         postings = inverted.get(word) or {}
         if not postings:
             typer.secho(f"Token '{word}' has 0 postings.", fg="yellow")
             return
+
         limit = 40
         typer.secho(f"Token '{word}': {len(postings)} postings", fg="green")
         shown = 0
@@ -734,6 +766,7 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
                 if shown >= limit:
                     break
         return
+
 
 
     typer.secho(f"Unknown command: {cmd}", fg="red")
