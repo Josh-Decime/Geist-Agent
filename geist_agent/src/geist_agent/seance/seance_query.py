@@ -1,6 +1,7 @@
 # src/geist_agent/seance/seance_query.py
 from __future__ import annotations
 
+import re
 import os
 import json
 from pathlib import Path
@@ -128,6 +129,78 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
 
         for cid, pres in presence.items():
             scores[cid] = scores.get(cid, 0.0) + pres * kw_boost
+        
+        # ---------- pattern-level boost (prefer defs and real call sites) ----------
+        # We give extra weight when the symbol appears in:
+        #   • a function definition:   def generate_filename(...)
+        #   • a callsite:              generate_filename(…)  or  ReportUtils.generate_filename(…)
+        try:
+            pattern_boost = float(os.getenv("SEANCE_PATTERN_BOOST", "8.0"))
+        except Exception:
+            pattern_boost = 8.0
+
+        # Load manifest to map chunk ids -> file/line ranges
+        try:
+            man = load_manifest(root, name)
+        except Exception:
+            man = None
+
+        if man:
+            # Candidate pool: chunks that contain ANY query token (esp. symbolish)
+            candidate_cids: set[str] = set()
+            basis = symbolish or list(set(qtokens))
+            for qt in set(basis):
+                postings = inverted.get(qt) or {}
+                candidate_cids.update(postings.keys())
+
+            # Lightweight parser helpers
+            sym = next(iter(symbolish), None)
+            sym = sym or (qtokens[0] if qtokens else None)
+            if sym:
+                # compile common regexes for this symbol
+                # def generate_filename(...
+                re_def = re.compile(rf"\bdef\s+{re.escape(sym)}\s*\(", re.IGNORECASE)
+                # …generate_filename(… or ReportUtils.generate_filename(…
+                re_call = re.compile(rf"(\b{re.escape(sym)}\s*\(|\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*{re.escape(sym)}\s*\()", re.IGNORECASE)
+
+                for cid in list(candidate_cids):
+                    meta = man.chunks.get(cid)
+                    if not meta:
+                        continue
+                    fp = Path(root) / meta.file
+                    try:
+                        lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+                        text = "\n".join(lines[meta.start_line - 1: meta.end_line])
+                    except Exception:
+                        continue
+
+                    # crude comment/docstring filter: downweight if symbol only shows in comments/strings
+                    # (we still apply positive boosts, but try not to elevate doc-only mentions)
+                    # Quick heuristic: count hits on non-comment lines.
+                    code_hits = 0
+                    total_hits = 0
+                    for ln in text.splitlines():
+                        if sym.lower() in ln.lower():
+                            total_hits += 1
+                            # consider line "code" if not starting with '#' and not obviously in a triple-quoted block start/end
+                            stripped = ln.lstrip()
+                            if not stripped.startswith("#"):
+                                code_hits += 1
+
+                    bonus = 0.0
+                    if re_def.search(text):
+                        bonus += pattern_boost * 1.5   # definition is strongest
+                    if re_call.search(text):
+                        bonus += pattern_boost * 1.0   # call site is strong
+
+                    # If all mentions look like comments/doc, trim the bonus a bit
+                    if total_hits > 0 and code_hits == 0:
+                        bonus *= 0.5
+
+                    if bonus > 0:
+                        scores[cid] = scores.get(cid, 0.0) + bonus
+        # ---------- /pattern-level boost ----------
+
 
         # Sort and guard-rail
         ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
