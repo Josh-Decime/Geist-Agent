@@ -1,4 +1,5 @@
-﻿import re
+﻿# src/geist_agent/utils.py
+import re
 import os
 from pathlib import Path
 from datetime import datetime

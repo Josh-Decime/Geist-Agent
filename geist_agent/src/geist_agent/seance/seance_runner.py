@@ -9,7 +9,7 @@ import threading
 import time
 import io
 import json
-from typing import Dict, List, Tuple, Optional
+from typing import Dict
 from pathlib import Path
 from contextlib import contextmanager
 from geist_agent.utils import EnvUtils
