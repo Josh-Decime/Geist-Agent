@@ -55,6 +55,94 @@ class ReportUtils:
         
 class EnvUtils:
     @staticmethod
+    def user_env_dir() -> Path:
+        """Return the ~/.geist directory (created if missing)."""
+        d = Path.home() / ".geist"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    @staticmethod
+    def user_env_path() -> Path:
+        """Return the canonical user-level env location: ~/.geist/.env"""
+        return EnvUtils.user_env_dir() / ".env"
+
+    @staticmethod
+    def build_env_content(settings: dict | None = None) -> str:
+        """
+        Produce a human-readable .env body you can copy/paste and tweak later.
+        Values come from 'settings' (if provided) or current environment (fallback).
+        """
+        settings = settings or {}
+        # pull from provided settings first, then existing env, finally a safe default
+        def g(name: str, default: str = "") -> str:
+            val = settings.get(name)
+            if val is None or str(val).strip() == "":
+                val = os.getenv(name, default)
+            return str(val or "").strip()
+
+        # common knobs used by this project
+        MODEL       = g("MODEL", "ollama/qwen2.5:7b-instruct")
+        API_BASE    = g("API_BASE", "http://localhost:11434")
+        OPENAI_KEY  = g("OPENAI_API_KEY", "")
+        ANTHROPIC   = g("ANTHROPIC_API_KEY", "")
+        REPORTS     = g("GEIST_REPORTS_ROOT", str(Path.home() / ".geist" / "reports"))
+        # seance tuning (non-critical; defaults are good)
+        DEFAULT_K   = g("SEANCE_DEFAULT_K", "6")
+        RETRIEVER   = g("SEANCE_RETRIEVER", "bm25")
+        BM25_K1     = g("SEANCE_BM25_K1", "1.2")
+        BM25_B      = g("SEANCE_BM25_B", "0.75")
+        KEY_BOOST   = g("SEANCE_KEYWORD_BOOST", "6.0")
+
+        # Render a friendly template. Keep comments short and scannable.
+        return (
+            "# ─────────────────────────────────────────────────────────────\n"
+            "# Geist Agent — user environment (.geist/.env)\n"
+            "# This file was auto-created by 'poltergeist doctor'.\n"
+            "# Safe to edit; we won't overwrite if it already exists.\n"
+            "# ─────────────────────────────────────────────────────────────\n"
+            "\n"
+            "# ----- Core LLM routing -----\n"
+            f"MODEL={MODEL}\n"
+            f"API_BASE={API_BASE}\n"
+            "\n"
+            "# Optional providers (leave blank if unused)\n"
+            f"OPENAI_API_KEY={OPENAI_KEY}\n"
+            f"ANTHROPIC_API_KEY={ANTHROPIC}\n"
+            "\n"
+            "# Reports output root (default is ~/.geist/reports)\n"
+            f"GEIST_REPORTS_ROOT={REPORTS}\n"
+            "\n"
+            "# ----- Séance defaults (retrieval/chat) -----\n"
+            f"SEANCE_DEFAULT_K={DEFAULT_K}\n"
+            f"SEANCE_RETRIEVER={RETRIEVER}   # bm25 | jaccard\n"
+            f"SEANCE_BM25_K1={BM25_K1}\n"
+            f"SEANCE_BM25_B={BM25_B}\n"
+            f"SEANCE_KEYWORD_BOOST={KEY_BOOST}\n"
+            "\n"
+            "# If you run Ollama locally, API_BASE should be http://localhost:11434\n"
+            "# For OpenAI, set API_BASE=https://api.openai.com and provide OPENAI_API_KEY.\n"
+            "# For Anthropic, leave MODEL to your Claude model and provide ANTHROPIC_API_KEY.\n"
+            "\n"
+        )
+
+    @staticmethod
+    def ensure_user_env(settings: dict | None = None) -> dict:
+        """
+        Ensure ~/.geist/.env exists. Never overwrites.
+        Returns: { 'path': <str>, 'created': <bool> }
+        """
+        p = EnvUtils.user_env_path()
+        if p.exists():
+            return {"path": str(p), "created": False}
+
+        body = EnvUtils.build_env_content(settings or {})
+        try:
+            p.write_text(body, encoding="utf-8")
+            return {"path": str(p), "created": True}
+        except Exception as e:
+            # don't crash doctor on write trouble; just report we couldn't create it
+            return {"path": str(p), "created": False, "error": str(e)}
+    @staticmethod
     def load_env_for_tool() -> List[str]:
         """
         Load environment variables for Geist tools in this precedence:

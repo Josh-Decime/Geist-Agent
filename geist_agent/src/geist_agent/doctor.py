@@ -119,8 +119,32 @@ def _render_table(results: List[CheckResult]) -> None:
 
 # ---------- command entry ----------
 def run(as_json: bool = False) -> int:
+    # Create ~/.geist/.env if it doesn't exist (non-destructive; never overwrites)
+    bootstrap = EnvUtils.ensure_user_env(
+        settings={
+            # seed from current env (or fallbacks) so the template is useful immediately
+            "MODEL": os.getenv("MODEL", "ollama/qwen2.5:7b-instruct"),
+            "API_BASE": os.getenv("API_BASE", "http://localhost:11434"),
+            "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
+            "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
+            "GEIST_REPORTS_ROOT": os.getenv("GEIST_REPORTS_ROOT", str(PathUtils.ensure_reports_dir().parent)),
+            "SEANCE_DEFAULT_K": os.getenv("SEANCE_DEFAULT_K", "6"),
+            "SEANCE_RETRIEVER": os.getenv("SEANCE_RETRIEVER", "bm25"),
+            "SEANCE_BM25_K1": os.getenv("SEANCE_BM25_K1", "1.2"),
+            "SEANCE_BM25_B": os.getenv("SEANCE_BM25_B", "0.75"),
+            "SEANCE_KEYWORD_BOOST": os.getenv("SEANCE_KEYWORD_BOOST", "6.0"),
+        }
+    )
+    if bootstrap.get("created"):
+        console.print(f"[yellow]• Created user env:[/yellow] {bootstrap['path']}")
+    elif "error" in bootstrap:
+        console.print(f"[red]• Could not create env ({bootstrap['error']}).[/red]")
+
+    # Now load env from all the normal places (user file will be picked up)
     EnvUtils.load_env_for_tool()
+
     results = [chk() for chk in CHECKS]
+
     critical_fail = any((not r.ok) and r.critical for r in results)
 
     if as_json:
