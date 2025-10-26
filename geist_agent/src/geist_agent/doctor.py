@@ -62,7 +62,8 @@ def check_ollama() -> CheckResult:
         return CheckResult("Ollama", False, info)
 
 def check_reports_write() -> CheckResult:
-    dir_ = PathUtils.ensure_reports_dir("scrying_reports")
+    # Probe the reports *root* (e.g., ~/.geist/reports), not a tool-specific subfolder.
+    dir_ = PathUtils.ensure_reports_dir() 
     test = dir_ / ".poltergeist_write_test.tmp"
     info: Dict[str, Any] = {"path": str(dir_)}
     try:
@@ -74,6 +75,7 @@ def check_reports_write() -> CheckResult:
     except Exception as e:
         info["error"] = str(e)
         return CheckResult("Reports Write", False, info)
+
 
 CHECKS: List[Check] = [
     check_versions,
