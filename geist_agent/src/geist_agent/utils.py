@@ -85,7 +85,7 @@ class EnvUtils:
         API_BASE    = g("API_BASE", "http://localhost:11434")
         OPENAI_KEY  = g("OPENAI_API_KEY", "")
         ANTHROPIC   = g("ANTHROPIC_API_KEY", "")
-        REPORTS     = g("GEIST_REPORTS_ROOT", str(Path.home() / ".geist" / "reports"))
+        REPORTS     = g("GEIST_REPORTS_ROOT", str(Path.home() / ".geist"))
         # seance tuning (non-critical; defaults are good)
         DEFAULT_K   = g("SEANCE_DEFAULT_K", "6")
         RETRIEVER   = g("SEANCE_RETRIEVER", "bm25")
@@ -109,7 +109,7 @@ class EnvUtils:
             f"OPENAI_API_KEY={OPENAI_KEY}\n"
             f"ANTHROPIC_API_KEY={ANTHROPIC}\n"
             "\n"
-            "# Reports output root (default is ~/.geist/reports)\n"
+            "# Reports output root (default is ~/.geist)\n"
             f"GEIST_REPORTS_ROOT={REPORTS}\n"
             "\n"
             "# ----- Séance defaults (retrieval/chat) -----\n"
@@ -200,7 +200,7 @@ class EnvUtils:
         for cand in _variants(Path.cwd()):
             _load(cand, override=False)
 
-        os.environ.setdefault("REPORTS_ROOT", str(Path.home() / ".geist" / "reports"))
+        os.environ.setdefault("REPORTS_ROOT", str(Path.home() / ".geist"))
         return loaded
 
 
@@ -220,7 +220,7 @@ class PathUtils:
     @staticmethod
     def ensure_reports_dir(subfolder: str | None = None) -> Path:
         """
-        Default reports under USER HOME (~/.geist/reports) so it’s stable,
+        Default reports under USER HOME (~/.geist) so it’s stable,
         writable, and consistent for both dev and installed tools.
 
         Override with GEIST_REPORTS_ROOT when needed.
@@ -229,7 +229,7 @@ class PathUtils:
         if base_str:
             base = Path(base_str)
         else:
-            base = Path.home() / ".geist" / "reports"  # <— new default anchor
+            base = Path.home() / ".geist" 
 
         out = base / subfolder if subfolder else base
         out.mkdir(parents=True, exist_ok=True)

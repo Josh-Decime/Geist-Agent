@@ -105,9 +105,9 @@ def _skip_by_env(rel_posix: str, filename: str, ext: str,
 def seance_dir(root: Path, name: str) -> Path:
     """
     Store all séance artifacts outside the repo to avoid commits:
-      ~/.geist/reports/seance/<name>/
+      ~/.geist/seance_reports/<name>/
     """
-    base = PathUtils.ensure_reports_dir("seance")  # ~/.geist/reports/seance
+    base = PathUtils.ensure_reports_dir("seance_reports")  # ~/.geist/reports/seance_reports
     d = Path(base) / name
     d.mkdir(parents=True, exist_ok=True)
     return d

@@ -9,6 +9,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 from rich.markdown import Markdown
+from pathlib import Path
 
 from geist_agent.utils import EnvUtils, PathUtils
 
@@ -129,7 +130,7 @@ def run(as_json: bool = False) -> int:
             "API_BASE": os.getenv("API_BASE", "http://localhost:11434"),
             "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY", ""),
             "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY", ""),
-            "GEIST_REPORTS_ROOT": os.getenv("GEIST_REPORTS_ROOT", str(PathUtils.ensure_reports_dir().parent)),
+            "GEIST_REPORTS_ROOT": os.getenv("GEIST_REPORTS_ROOT",str(Path.home() / ".geist"),),
             "SEANCE_DEFAULT_K": os.getenv("SEANCE_DEFAULT_K", "6"),
             "SEANCE_RETRIEVER": os.getenv("SEANCE_RETRIEVER", "bm25"),
             "SEANCE_BM25_K1": os.getenv("SEANCE_BM25_K1", "1.2"),
