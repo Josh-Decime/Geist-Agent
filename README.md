@@ -14,20 +14,23 @@ Geist Agent is a custom AI agent built on the [CrewAI](https://github.com/crewAI
 
 ## Installation
 
-1. **Clone the Repository**:
+1. **Fork the Repository**:
+   Go to the original repository on GitHub and click the "Fork" button to create your own copy.
+
+2. **Clone the Repository**:
    ```bash
    git clone https://github.com/<your-username>/geist-agent.git
    cd geist-agent
    ```
    *Replace `<your-username>` with your GitHub username or the correct repository URL.*
 
-2. **Install uv**:
+3. **Install uv**:
    If you haven't already, install [uv](https://github.com/astral-sh/uv) to manage dependencies:
    ```bash
    pip install uv
    ```
 
-3. **Install Dependencies**:
+4. **Install Dependencies**:
    Use `uv` or `pip` to install the package. For development, install in editable mode:
    ```bash
    uv pip install -e .
@@ -37,7 +40,7 @@ Geist Agent is a custom AI agent built on the [CrewAI](https://github.com/crewAI
    pip install -e .
    ```
 
-4. **Verify Installation**:
+5. **Verify Installation**:
    Run the diagnostics command to ensure everything is set up correctly:
    ```bash
    poltergeist doctor
@@ -48,13 +51,16 @@ Geist Agent is a custom AI agent built on the [CrewAI](https://github.com/crewAI
 
 ## Configuration
 
-1. **Create a `.env` File**:
-   Create a `.env` file in the appropriate directory for your operating system:
+1. **Run the Doctor Command**:
+   Run the following command to auto-generate the `.geist` directory and `.env` file in the appropriate location for your operating system. This will include placments for your API keys and extra setting controls for the commands:
+   ```bash
+   poltergeist doctor
+   ```
    - **Windows**: `C:\Users\<your-username>\.geist\.env`
    - **Linux/macOS**: `~/.geist/.env`
 
 2. **Add API Keys**:
-   Add your API keys & configuration to the `.env` file. Example:
+   Edit the generated `.env` file and add your API keys & configuration. Example:
    ```plaintext
    OPENAI_API_KEY=sk-xxxx
    MODEL=gpt-4o-mini
@@ -87,6 +93,18 @@ poltergeist --help
   Check your environment, Ollama setup, & reports directory:
   ```bash
   poltergeist doctor
+  ```
+
+- **Generate Security Report**:
+  Write a security report using OSV (or their API if not installed):
+  ```bash
+  poltergeist ward --path .
+  ```
+
+- **Index a Project**:
+  Index a project & use BM25 to find tokens so the LLM can answer questions about the codebase:
+  ```bash
+  poltergeist seance --path .
   ```
 
 ---
