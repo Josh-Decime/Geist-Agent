@@ -67,36 +67,32 @@ def _expand_to_deep_contexts(
     """
     def _tokenize(s: str) -> set[str]:
         return set(re.findall(r"[A-Za-z0-9_]+", s.lower()))
+    
+    out: list[tuple[str, str, int, int, str]] = []
 
     # read env knobs (fail-safe defaults)
-    try:
-        window_lines = int(os.getenv("SEANCE_DEEP_WINDOW_LINES", "120"))
-    except Exception:
-        window_lines = 120
-    try:
-        max_file_chars = int(os.getenv("SEANCE_DEEP_MAX_FILE_CHARS", "4000"))
-    except Exception:
-        max_file_chars = 4000
-    try:
-        min_overlap = int(os.getenv("SEANCE_DEEP_MIN_OVERLAP", "1"))
-    except Exception:
-        min_overlap = 1
-
-    out: list[tuple[str, str, int, int, str]] = []
-    seen_files: set[str] = set()
-
-    for (_cid, file, s, e, _prev) in contexts:
-        if file in seen_files:
-            continue
-        seen_files.add(file)
-
-        fp = root / file
+    window_lines = int(os.getenv("SEANCE_DEEP_WINDOW_LINES", "120"))
+    max_file_chars = int(os.getenv("SEANCE_DEEP_MAX_FILE_CHARS", "4000"))
+    min_overlap   = int(os.getenv("SEANCE_DEEP_MIN_OVERLAP", "1"))
+    ...
+    for (_cid, file, s, e, _prev) in contexts:    # contexts contains best chunk spans
         try:
-            lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = (root / file).read_text(...).splitlines()
         except Exception:
-            out.append((f"win:{file}", file, 1, 1, "(unreadable file)"))
-            if len(out) >= top_n_files:
-                break
+            continue  # skip unreadable file entirely
+
+        # initial window centered on chunk span
+        total = len(lines)
+        start = max(1, s - window_lines)
+        end   = min(total, e + window_lines)
+        text = "\n".join(lines[start-1: end])
+        if len(text) > max_file_chars:
+            text = text[:max_file_chars]
+        # ensure chunk tokens appear in window (if not, try expanding further or skip)
+        ...
+        out.append((f"win:{file}", file, start, end, text))
+        if len(out) >= top_n_files:
+            break
             continue
 
         total = len(lines)
@@ -161,25 +157,22 @@ def _expand_to_wide_contexts(
 
     # 3) build tiny windows
     out: list[tuple[str, str, int, int, str]] = []
-    for file, _tot in ranked:
-        cid, s, e, _best = file_best[file]
-        fp = root / file
+    for file, _tot in ranked:                     # iterate over top-N ranked files
+        cid, s, e, _best = file_best[file]         # best chunk in this file
         try:
-            lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = (root / file).read_text(...).splitlines()
         except Exception:
-            out.append((cid, file, 1, 1, "(unreadable file)"))
-            continue
+            continue  # skip unreadable file, don't include empty context
 
         total = len(lines)
-        start = max(1, min(s, e) - window_lines)
+        start = max(1, min(s, e) - window_lines)   # narrow window around hit
         end   = min(total, max(s, e) + window_lines)
-        text  = "\n".join(lines[start - 1:end])
-        if len(text) > max_chars:
+        text  = "\n".join(lines[start - 1: end])
+        if len(text) > max_chars:                 # trim to char limit
             text = text[:max_chars]
-
         out.append((cid, file, start, end, text))
 
-    return out
+        return out
 
 
 # --------- loading indicator --------
@@ -499,47 +492,45 @@ def chat(
         contexts, sources_out = [], []
 
         if use_wide:
-            # env knobs for wide
+            # env knobs for wide mode
             top_n     = _env_int("SEANCE_WIDE_TOP_FILES", max(session.info.k, 10))
-            win_lines = _env_int("SEANCE_WIDE_WINDOW_LINES", 10)   # tiny per-file slice
+            win_lines = _env_int("SEANCE_WIDE_WINDOW_LINES", 10)
             max_chars = _env_int("SEANCE_WIDE_MAX_FILE_CHARS", 600)
 
-            # matches is list[(cid, score)], pass to expander
-            contexts = _expand_to_wide_contexts(
-                matches, man, root,
-                top_n_files=top_n,
-                window_lines=win_lines,
-                max_chars=max_chars,
-            )
+            # Expand to tiny context windows across many files
+            contexts = _expand_to_wide_contexts(matches, man, root,
+                                            top_n_files=top_n,
+                                            window_lines=win_lines,
+                                            max_chars=max_chars)
             sources_out = [f"{file}:{s}-{e}" for (_cid, file, s, e, _txt) in contexts]
 
         elif use_deep:
-            # --- SEANCE DEEP: aggregate by file & expand best windows ---
+            # SEANCE_DEEP_TOP_FILES controls how many files to take (default 3)
             top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
 
-            # 1) sum candidate scores per file, and remember the best chunk per file
-            file_scores: dict[str, float] = {}
-            best_window: dict[str, tuple[str, int, int, float]] = {}
-
+            # 1) aggregate chunk scores per file and find best chunk in each
+            file_scores = {}
+            best_window = {}
             for cid, score in matches:
                 meta = man.chunks.get(cid)
-                if not meta:
+                if not meta: 
                     continue
                 file_scores[meta.file] = file_scores.get(meta.file, 0.0) + float(score)
+                # track the highest-scoring chunk in this file
                 prev = best_window.get(meta.file)
                 if prev is None or score > prev[3]:
                     best_window[meta.file] = (cid, meta.start_line, meta.end_line, float(score))
 
-            # 2) choose top-N files by total relevance
+            # 2) choose top-N files by total relevance score
             ranked_files = sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
 
-            # 3) prepare windows for expander (use each file's best chunk span)
+            # 3) prepare best-chunk spans for each top file
             tmp = []
             for file, _tot in ranked_files:
                 cid, s, e, _best = best_window[file]
-                tmp.append((cid, file, s, e, ""))  # preview filled by expander
+                tmp.append((cid, file, s, e, ""))  # placeholder text to be filled by expander
 
-            # 4) expand those windows (bounded slices, not whole files)
+            # 4) expand those windows with a broad line window (±120 lines default)
             contexts = _expand_to_deep_contexts(tmp, root, top_n)
             sources_out = [f"{file}:{s}-{e}" for (_cid, file, s, e, _txt) in contexts]
 

@@ -21,22 +21,22 @@ def _build_prompt(question: str, contexts: List[Tuple[str, str, int, int, str]])
     for (_cid, file, s, e, preview) in contexts:
         blocks.append(f"### {file}:{s}-{e}\n{preview}")
 
-    return textwrap.dedent(f"""
-    You are an expert software assistant. You must answer ONLY using the provided code excerpts.
-    If the excerpts are insufficient or off-topic, say exactly:
-    "I don’t have enough on-topic context to answer. I would need: <list missing info>."
-    Do NOT invent details. Do NOT change the question.
+    prompt = textwrap.dedent(f"""
+        You are an expert software assistant. You must answer ONLY using the provided code excerpts.
+        If the excerpts are insufficient or off-topic, say exactly:
+        "I don’t have enough on-topic context to answer. I would need: <list missing info>."
+        Do NOT invent details. Do NOT change the question.
 
-    Question:
-    {question}
+        Question:
+        {question}
 
-    Context:
-    {'\n\n'.join(blocks)}
+        Context:
+        {'\n\n'.join(blocks)}
 
-    Tasks:
-    1) Restate the question in one short sentence to confirm scope.
-    2) Provide a precise answer grounded in the excerpts above.
-    3) End with a "Sources:" section listing file:line citations you used.
+        Tasks:
+        1) Restate the question in one short sentence to confirm scope.
+        2) Provide a precise answer grounded in the excerpts above.
+        3) End with a "Sources:" section listing file:line citations you used.
     """).strip()
 
 
