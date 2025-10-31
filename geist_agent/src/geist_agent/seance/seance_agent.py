@@ -18,6 +18,8 @@ except Exception:  # pragma: no cover
 
 def _build_prompt(question: str, contexts: List[Tuple[str, str, int, int, str]]) -> str:
     blocks = []
+    if not contexts:
+        return "No Context recieved.. very sad"
     for (_cid, file, s, e, preview) in contexts:
         blocks.append(f"### {file}:{s}-{e}\n{preview}")
 

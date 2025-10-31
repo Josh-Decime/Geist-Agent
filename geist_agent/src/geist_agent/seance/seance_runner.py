@@ -170,7 +170,7 @@ def _expand_to_wide_contexts(
         text  = "\n".join(lines[start - 1: end])
         if len(text) > max_chars:                 # trim to char limit
             text = text[:max_chars]
-        out.append((cid, file, start, end, text))
+            out.append((cid, file, start, end, text))
 
         return out
 
@@ -528,7 +528,7 @@ def chat(
             tmp = []
             for file, _tot in ranked_files:
                 cid, s, e, _best = best_window[file]
-                tmp.append((cid, file, s, e, ""))  # placeholder text to be filled by expander
+                tmp.append((cid, file, s, e, "(placeholder)"))
 
             # 4) expand those windows with a broad line window (±120 lines default)
             contexts = _expand_to_deep_contexts(tmp, root, top_n)
@@ -585,6 +585,9 @@ def chat(
                     contexts.append((cid, meta.file, meta.start_line, meta.end_line, preview))
                     sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
 
+
+        if not contexts:
+            typer.secho("⚠️  No valid contexts extracted. Check deep/wide context logic.", fg="red")
 
         # Spinner shows which retrieval path ran
         mode_label = "WIDE" if use_wide else ("DEEP" if use_deep else retriever.upper())
