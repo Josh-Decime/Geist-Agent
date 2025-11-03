@@ -51,7 +51,7 @@ def _env_bool(name: str, default: bool) -> bool:
     if v in ("0", "false", "no", "off"): return False
     return default
 
-# -------- Deep context --------
+# -------- Deep Context -------
 def _expand_to_deep_contexts(
     contexts: list[tuple[str, str, int, int, str]],
     root: Path,
@@ -64,16 +64,14 @@ def _expand_to_deep_contexts(
     Env knobs:
       SEANCE_DEEP_WINDOW_LINES   (default 120)    -> +/- lines around best chunk
       SEANCE_DEEP_MAX_FILE_CHARS (default 4000)   -> cap text per file
-      SEANCE_DEEP_MIN_OVERLAP    (default 1)      -> (soft) token overlap gate
+      SEANCE_DEEP_MIN_OVERLAP    (default 1)      -> skip if window barely overlaps
     """
     def _tokenize(s: str) -> set[str]:
         return set(re.findall(r"[A-Za-z0-9_]+", s.lower()))
 
-    out: list[tuple[str, str, int, int, str]] = []
-
     # read env knobs (fail-safe defaults)
     try:
-        window_lines  = int(os.getenv("SEANCE_DEEP_WINDOW_LINES", "120"))
+        window_lines = int(os.getenv("SEANCE_DEEP_WINDOW_LINES", "120"))
     except Exception:
         window_lines = 120
     try:
@@ -85,30 +83,35 @@ def _expand_to_deep_contexts(
     except Exception:
         min_overlap = 1
 
-    # contexts ⇢ each is (cid, file, s, e, _placeholder)
+    out: list[tuple[str, str, int, int, str]] = []
+    seen_files: set[str] = set()
+
     for (_cid, file, s, e, _prev) in contexts:
+        if file in seen_files:
+            continue
+        seen_files.add(file)
+
+        fp = root / file
         try:
-            lines = (root / file).read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
-            # skip unreadable files, don't poison context
+            out.append((f"win:{file}", file, 1, 1, "(unreadable file)"))
+            if len(out) >= top_n_files:
+                break
             continue
 
         total = len(lines)
-        if total == 0:
-            continue
-
         # initial window centered on best chunk span
-        lo = min(s, e)
-        hi = max(s, e)
-        start = max(1, lo - window_lines)
-        end   = min(total, hi + window_lines)
-
+        start = max(1, s - window_lines)
+        end   = min(total, e + window_lines)
         text  = "\n".join(lines[start - 1:end])
+
+        # cap by character budget for this file
         if len(text) > max_file_chars:
             text = text[:max_file_chars]
 
-        # soft overlap gate — if it fails, *widen once*, else keep window
-        chunk_tokens = _tokenize("\n".join(lines[lo - 1:hi]))
+        # lightweight overlap gate: does window actually relate to the chunk?
+        chunk_tokens = _tokenize("\n".join(lines[s - 1:e]))
         win_tokens   = _tokenize(text)
         if len(chunk_tokens & win_tokens) < min_overlap:
             # try one wider pass
@@ -117,17 +120,17 @@ def _expand_to_deep_contexts(
             alt_text  = "\n".join(lines[alt_start - 1:alt_end])
             if len(alt_text) > max_file_chars:
                 alt_text = alt_text[:max_file_chars]
-            # if still no overlap, DO NOT drop the file — keep original window
             if len(chunk_tokens & _tokenize(alt_text)) >= min_overlap:
                 start, end, text = alt_start, alt_end, alt_text
+            else:
+                continue
 
         out.append((f"win:{file}", file, start, end, text))
-        if len(out) >= max(1, top_n_files):
+        if len(out) >= top_n_files:
             break
-
     return out
 
-# -------- Wide context --------
+# -------- Wide Context --------
 def _expand_to_wide_contexts(
     matches: list[tuple[str, float]],
     man,
@@ -139,7 +142,6 @@ def _expand_to_wide_contexts(
     """
     Pick the best chunk per top-N files and take a SMALL window around it.
     Goal: breadth across many files with tiny per-file snippets.
-    ALWAYS returns a list (possibly empty) — never None.
     """
     # 1) keep highest-scoring chunk per file + file totals
     file_best: dict[str, tuple[str, int, int, float]] = {}
@@ -151,39 +153,27 @@ def _expand_to_wide_contexts(
             continue
         file_tot[meta.file] = file_tot.get(meta.file, 0.0) + float(score)
         prev = file_best.get(meta.file)
-        if (prev is None) or (score > prev[3]):
+        if prev is None or score > prev[3]:
             file_best[meta.file] = (cid, meta.start_line, meta.end_line, float(score))
 
     # 2) choose top-N files by total relevance
-    if not file_tot:
-        return []
-    ranked = sorted(file_tot.items(), key=lambda kv: kv[1], reverse=True)[:max(1, top_n_files)]
+    ranked = sorted(file_tot.items(), key=lambda kv: kv[1], reverse=True)[:top_n_files]
 
     # 3) build tiny windows
     out: list[tuple[str, str, int, int, str]] = []
     for file, _tot in ranked:
-        best = file_best.get(file)
-        if not best:
-            continue
-        cid, s, e, _best_score = best
-
+        cid, s, e, _best = file_best[file]
+        fp = root / file
         try:
-            lines = (root / file).read_text(encoding="utf-8", errors="replace").splitlines()
+            lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
-            # skip unreadable file; do NOT append placeholders
+            out.append((cid, file, 1, 1, "(unreadable file)"))
             continue
 
         total = len(lines)
-        if total == 0:
-            continue
-
-        # narrow window around hit
-        lo = min(s, e)
-        hi = max(s, e)
-        start = max(1, lo - window_lines)
-        end   = min(total, hi + window_lines)
-
-        text = "\n".join(lines[start - 1: end])
+        start = max(1, min(s, e) - window_lines)
+        end   = min(total, max(s, e) + window_lines)
+        text  = "\n".join(lines[start - 1:end])
         if len(text) > max_chars:
             text = text[:max_chars]
 
@@ -342,7 +332,6 @@ def index(
     out = index_path(root, name)
     typer.secho(f'🪵 Index ready: "{os.fspath(out)}"', fg="green")
 
-
 # ───────────────────────────────────── chat ────────────────────────────────────
 @app.command("chat")
 def chat(
@@ -357,9 +346,7 @@ def chat(
     env_reload: bool = typer.Option(False, "--env", help="Reload .env before answering"),
     #Remove when --wide is rebuilt
     wide: bool = typer.Option(False, "--wide", help="Breadth-first context: tiny snippets from many files"),
-
 ):
-
     """
     Zero-step UX: if this is the first run, we'll connect + index for you, then chat.
     Transcripts + index live under ~/.geist/reports/seance/<name>/
@@ -375,7 +362,6 @@ def chat(
     max_chars_env = _env_int("SEANCE_MAX_CHARS", 1200)
     overlap_env   = _env_int("SEANCE_OVERLAP", 150)
     seance_build_index(root, name, max_chars=max_chars_env, overlap=overlap_env, verbose=idx_verbose)
-
 
     # If user left default k=6, allow .env override: SEANCE_DEFAULT_K
     if k == 6:
@@ -508,45 +494,47 @@ def chat(
         contexts, sources_out = [], []
 
         if use_wide:
-            # env knobs for wide mode
+            # env knobs for wide
             top_n     = _env_int("SEANCE_WIDE_TOP_FILES", max(session.info.k, 10))
-            win_lines = _env_int("SEANCE_WIDE_WINDOW_LINES", 10)
+            win_lines = _env_int("SEANCE_WIDE_WINDOW_LINES", 10)   # tiny per-file slice
             max_chars = _env_int("SEANCE_WIDE_MAX_FILE_CHARS", 600)
 
-            # Expand to tiny context windows across many files
-            contexts = _expand_to_wide_contexts(matches, man, root,
-                                            top_n_files=top_n,
-                                            window_lines=win_lines,
-                                            max_chars=max_chars)
+            # matches is list[(cid, score)], pass to expander
+            contexts = _expand_to_wide_contexts(
+                matches, man, root,
+                top_n_files=top_n,
+                window_lines=win_lines,
+                max_chars=max_chars,
+            )
             sources_out = [f"{file}:{s}-{e}" for (_cid, file, s, e, _txt) in contexts]
 
         elif use_deep:
-            # SEANCE_DEEP_TOP_FILES controls how many files to take (default 3)
+            # --- SEANCE DEEP: aggregate by file & expand best windows ---
             top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
 
-            # 1) aggregate chunk scores per file and find best chunk in each
-            file_scores = {}
-            best_window = {}
+            # 1) sum candidate scores per file, and remember the best chunk per file
+            file_scores: dict[str, float] = {}
+            best_window: dict[str, tuple[str, int, int, float]] = {}
+
             for cid, score in matches:
                 meta = man.chunks.get(cid)
-                if not meta: 
+                if not meta:
                     continue
                 file_scores[meta.file] = file_scores.get(meta.file, 0.0) + float(score)
-                # track the highest-scoring chunk in this file
                 prev = best_window.get(meta.file)
                 if prev is None or score > prev[3]:
                     best_window[meta.file] = (cid, meta.start_line, meta.end_line, float(score))
 
-            # 2) choose top-N files by total relevance score
+            # 2) choose top-N files by total relevance
             ranked_files = sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
 
-            # 3) prepare best-chunk spans for each top file
+            # 3) prepare windows for expander (use each file's best chunk span)
             tmp = []
             for file, _tot in ranked_files:
                 cid, s, e, _best = best_window[file]
-                tmp.append((cid, file, s, e, "(placeholder)"))
+                tmp.append((cid, file, s, e, ""))  # preview filled by expander
 
-            # 4) expand those windows with a broad line window (±120 lines default)
+            # 4) expand those windows (bounded slices, not whole files)
             contexts = _expand_to_deep_contexts(tmp, root, top_n)
             sources_out = [f"{file}:{s}-{e}" for (_cid, file, s, e, _txt) in contexts]
 
@@ -602,13 +590,6 @@ def chat(
                     sources_out.append(f"{meta.file}:{meta.start_line}-{meta.end_line}")
 
 
-        if not contexts:
-            typer.secho("⚠️  No valid contexts extracted. Check deep/wide context logic.", fg="red")
-
-        # Defensive: ensure contexts is a list, never None (protects list comprehensions below)
-        if contexts is None:
-            contexts = []
-            
         # Spinner shows which retrieval path ran
         mode_label = "WIDE" if use_wide else ("DEEP" if use_deep else retriever.upper())
         model_display = model or os.getenv("SEANCE_MODEL") or os.getenv("MODEL") or "default-model"
@@ -672,7 +653,7 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
         typer.echo("  :env                    Reload .env now (no reindex)")
         typer.echo("  :show session           Print session folder paths")
         return
-    
+   
     if parts[0] == ":deep":
         if len(parts) >= 2 and parts[1] in ("on", "off"):
             val = parts[1] == "on"
@@ -728,7 +709,7 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
         for k, v in p.items():
             typer.echo(f"  {k:10}: {v}")
         return
-    
+   
     if parts[0] == ":debug" and len(parts) >= 3 and parts[1] == "token":
         word = parts[2].strip().lower()
 
@@ -780,7 +761,5 @@ def _handle_repl_command(cmd: str, session: SeanceSession):
                 if shown >= limit:
                     break
         return
-
-
 
     typer.secho(f"Unknown command: {cmd}", fg="red")

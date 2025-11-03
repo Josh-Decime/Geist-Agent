@@ -1,4 +1,4 @@
-# src/geist_agent/seance/seance_agent.py 
+# src/geist_agent/seance/seance_agent.py
 from __future__ import annotations
 
 import os
@@ -18,27 +18,29 @@ except Exception:  # pragma: no cover
 
 def _build_prompt(question: str, contexts: List[Tuple[str, str, int, int, str]]) -> str:
     blocks = []
-    if not contexts:
-        return "No Context recieved.. very sad"
     for (_cid, file, s, e, preview) in contexts:
         blocks.append(f"### {file}:{s}-{e}\n{preview}")
 
-    prompt = textwrap.dedent(f"""
-        You are an expert software assistant. You must answer ONLY using the provided code excerpts.
-        If the excerpts are insufficient or off-topic, say exactly:
-        "I don’t have enough on-topic context to answer. I would need: <list missing info>."
-        Do NOT invent details. Do NOT change the question.
 
-        Question:
-        {question}
+    return textwrap.dedent(f"""
+    You are an expert software assistant. You must answer ONLY using the provided code excerpts.
+    If the excerpts are insufficient or off-topic, say exactly:
+    "I don’t have enough on-topic context to answer. I would need: <list missing info>."
+    Do NOT invent details. Do NOT change the question.
 
-        Context:
-        {'\n\n'.join(blocks)}
 
-        Tasks:
-        1) Restate the question in one short sentence to confirm scope.
-        2) Provide a precise answer grounded in the excerpts above.
-        3) End with a "Sources:" section listing file:line citations you used.
+    Question:
+    {question}
+
+
+    Context:
+    {'\n\n'.join(blocks)}
+
+
+    Tasks:
+    1) Restate the question in one short sentence to confirm scope.
+    2) Provide a precise answer grounded in the excerpts above.
+    3) End with a "Sources:" section listing file:line citations you used.
     """).strip()
 
 
@@ -88,7 +90,7 @@ class SeanceAgent:
             role="Code Answerer",
             goal="Answer questions about the repository using provided code snippets and cite file:line sources.",
             backstory="A seasoned software engineer who grounds every answer in the provided excerpts.",
-            verbose=verbose,   
+            verbose=verbose,  
             llm=llm_obj,
             model=model_id,
         )
@@ -103,7 +105,7 @@ class SeanceAgent:
             agents=[code_answerer],
             tasks=[task],
             process=Process.sequential,
-            verbose=verbose,   
+            verbose=verbose,  
         )
 
         result = crew.kickoff()
