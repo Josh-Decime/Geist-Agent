@@ -14,6 +14,7 @@ from pathlib import Path
 from contextlib import contextmanager
 from geist_agent.utils import EnvUtils
 from .seance_index import (
+    Manifest,
     connect as seance_connect,
     build_index as seance_build_index,
     load_manifest, index_path, seance_dir
@@ -32,6 +33,9 @@ except Exception:
 
 # --- optional ANSI stripper for terminal echo (we'll keep transcript clean in SeanceSession) ---
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+def _tokenize(s: str) -> set[str]:
+    return set(re.findall(r"[A-Za-z0-9_]+", s.lower()))
 
 def _strip_ansi(s: str) -> str:
     if not isinstance(s, str):
@@ -53,23 +57,36 @@ def _env_bool(name: str, default: bool) -> bool:
 
 # -------- Deep Context -------
 def _expand_to_deep_contexts(
-    contexts: list[tuple[str, str, int, int, str]],
+    matches: list[tuple[str, float]],
+    man: Manifest,
     root: Path,
     top_n_files: int,
 ) -> list[tuple[str, str, int, int, str]]:
     """
-    Build deep contexts by expanding around the *most relevant chunk window*
-    for each top file, instead of dumping entire files.
-
-    Env knobs:
-      SEANCE_DEEP_WINDOW_LINES   (default 120)    -> +/- lines around best chunk
-      SEANCE_DEEP_MAX_FILE_CHARS (default 4000)   -> cap text per file
-      SEANCE_DEEP_MIN_OVERLAP    (default 1)      -> skip if window barely overlaps
+    Build deep contexts by expanding large windows around the *most relevant chunk*
+    for each top file, ranked by total relevance score. This prioritizes depth in
+    fewer files for questions needing full-file context (e.g., connecting logic within a file).
+    - Scalable: Handles large repos by capping top_n_files and per-file chars.
+    - Verbose logs: Print steps for file ranking, window calc, and overlap checks.
     """
-    def _tokenize(s: str) -> set[str]:
-        return set(re.findall(r"[A-Za-z0-9_]+", s.lower()))
+    print("• Deep mode: Ranking files by total relevance...")
+    # ─── Compute per-file totals and best chunks (DRY: mirrors wide for consistency) ───
+    file_best: dict[str, tuple[str, int, int, float]] = {}
+    file_tot: dict[str, float] = {}
+    for cid, score in matches:
+        meta = man.chunks.get(cid)
+        if not meta:
+            continue
+        file_tot[meta.file] = file_tot.get(meta.file, 0.0) + float(score)
+        prev = file_best.get(meta.file)
+        if prev is None or score > prev[3]:
+            file_best[meta.file] = (cid, meta.start_line, meta.end_line, float(score))
 
-    # read env knobs (fail-safe defaults)
+    # ─── Rank and select top files ───
+    ranked = sorted(file_tot.items(), key=lambda kv: kv[1], reverse=True)[:top_n_files]
+    print(f"• Deep mode: Selected {len(ranked)} top files for expansion.")
+
+    # ─── Load env knobs (fail-safe defaults) ───
     try:
         window_lines = int(os.getenv("SEANCE_DEEP_WINDOW_LINES", "120"))
     except Exception:
@@ -84,56 +101,56 @@ def _expand_to_deep_contexts(
         min_overlap = 1
 
     out: list[tuple[str, str, int, int, str]] = []
-    seen_files: set[str] = set()
 
-    for (_cid, file, s, e, _prev) in contexts:
-        if file in seen_files:
-            continue
-        seen_files.add(file)
-
+    # ─── Expand per top file ───
+    for file, _tot in ranked:
+        print(f"• Deep mode: Expanding window for {file}...")
+        cid, s, e, _best = file_best[file]
         fp = root / file
         try:
             lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
+            print(f"• Deep mode: Skipped unreadable file {file}.")
             out.append((f"win:{file}", file, 1, 1, "(unreadable file)"))
-            if len(out) >= top_n_files:
-                break
             continue
 
         total = len(lines)
-        # initial window centered on best chunk span
+        # ─── Initial window centered on best chunk ───
         start = max(1, s - window_lines)
-        end   = min(total, e + window_lines)
-        text  = "\n".join(lines[start - 1:end])
+        end = min(total, e + window_lines)
+        text = "\n".join(lines[start - 1:end])
 
-        # cap by character budget for this file
+        # ─── Cap by char budget ───
         if len(text) > max_file_chars:
             text = text[:max_file_chars]
+            print(f"• Deep mode: Truncated {file} to {max_file_chars} chars.")
 
-        # lightweight overlap gate: does window actually relate to the chunk?
+        # ─── Overlap gate: ensure window relates to original chunk ───
         chunk_tokens = _tokenize("\n".join(lines[s - 1:e]))
-        win_tokens   = _tokenize(text)
+        win_tokens = _tokenize(text)
         if len(chunk_tokens & win_tokens) < min_overlap:
-            # try one wider pass
+            print(f"• Deep mode: Low overlap in {file}; trying wider window...")
             alt_start = max(1, start - window_lines // 2)
-            alt_end   = min(total, end + window_lines // 2)
-            alt_text  = "\n".join(lines[alt_start - 1:alt_end])
+            alt_end = min(total, end + window_lines // 2)
+            alt_text = "\n".join(lines[alt_start - 1:alt_end])
             if len(alt_text) > max_file_chars:
                 alt_text = alt_text[:max_file_chars]
             if len(chunk_tokens & _tokenize(alt_text)) >= min_overlap:
                 start, end, text = alt_start, alt_end, alt_text
+                print(f"• Deep mode: Wider window accepted for {file}.")
             else:
+                print(f"• Deep mode: Skipped {file} due to insufficient overlap.")
                 continue
 
         out.append((f"win:{file}", file, start, end, text))
-        if len(out) >= top_n_files:
-            break
+
+    print(f"• Deep mode: Built {len(out)} deep contexts.")
     return out
 
 # -------- Wide Context --------
 def _expand_to_wide_contexts(
     matches: list[tuple[str, float]],
-    man,
+    man: Manifest,
     root: Path,
     top_n_files: int,
     window_lines: int,
@@ -141,12 +158,15 @@ def _expand_to_wide_contexts(
 ) -> list[tuple[str, str, int, int, str]]:
     """
     Pick the best chunk per top-N files and take a SMALL window around it.
-    Goal: breadth across many files with tiny per-file snippets.
+    Goal: breadth across many files with tiny per-file snippets for questions
+    spanning multiple files (e.g., connecting spread-out functions).
+    - Scalable: Ranks by total score, caps top_n_files and per-snippet chars.
+    - Verbose logs: Print file selection and snippet building steps.
     """
-    # 1) keep highest-scoring chunk per file + file totals
+    print("• Wide mode: Ranking files by total relevance...")
+    # ─── Keep highest-scoring chunk per file + file totals ───
     file_best: dict[str, tuple[str, int, int, float]] = {}
     file_tot: dict[str, float] = {}
-
     for cid, score in matches:
         meta = man.chunks.get(cid)
         if not meta:
@@ -156,29 +176,34 @@ def _expand_to_wide_contexts(
         if prev is None or score > prev[3]:
             file_best[meta.file] = (cid, meta.start_line, meta.end_line, float(score))
 
-    # 2) choose top-N files by total relevance
+    # ─── Choose top-N files by total relevance ───
     ranked = sorted(file_tot.items(), key=lambda kv: kv[1], reverse=True)[:top_n_files]
+    print(f"• Wide mode: Selected {len(ranked)} top files for small snippets.")
 
-    # 3) build tiny windows
+    # ─── Build tiny windows ───
     out: list[tuple[str, str, int, int, str]] = []
     for file, _tot in ranked:
+        print(f"• Wide mode: Building snippet for {file}...")
         cid, s, e, _best = file_best[file]
         fp = root / file
         try:
             lines = fp.read_text(encoding="utf-8", errors="replace").splitlines()
         except Exception:
+            print(f"• Wide mode: Skipped unreadable file {file}.")
             out.append((cid, file, 1, 1, "(unreadable file)"))
             continue
 
         total = len(lines)
         start = max(1, min(s, e) - window_lines)
-        end   = min(total, max(s, e) + window_lines)
-        text  = "\n".join(lines[start - 1:end])
+        end = min(total, max(s, e) + window_lines)
+        text = "\n".join(lines[start - 1:end])
         if len(text) > max_chars:
             text = text[:max_chars]
+            print(f"• Wide mode: Truncated {file} to {max_chars} chars.")
 
         out.append((cid, file, start, end, text))
 
+    print(f"• Wide mode: Built {len(out)} wide snippets.")
     return out
 
 # --------- loading indicator --------
