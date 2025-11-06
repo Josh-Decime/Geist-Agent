@@ -519,48 +519,24 @@ def chat(
         contexts, sources_out = [], []
 
         if use_wide:
-            # env knobs for wide
-            top_n     = _env_int("SEANCE_WIDE_TOP_FILES", max(session.info.k, 10))
-            win_lines = _env_int("SEANCE_WIDE_WINDOW_LINES", 10)   # tiny per-file slice
-            max_chars = _env_int("SEANCE_WIDE_MAX_FILE_CHARS", 600)
+            # env knobs for wide (scalable: customize snippet size/breadth via .env)
+            top_n_files = _env_int("SEANCE_WIDE_TOP_FILES", max(session.info.k, 10))  # Number of files for breadth
+            window_lines = _env_int("SEANCE_WIDE_WINDOW_LINES", 30)                  # +/- lines around best chunk
+            max_chars = _env_int("SEANCE_WIDE_MAX_CHARS", 900)                       # Max chars per snippet
 
             # matches is list[(cid, score)], pass to expander
             contexts = _expand_to_wide_contexts(
                 matches, man, root,
-                top_n_files=top_n,
-                window_lines=win_lines,
+                top_n_files=top_n_files,
+                window_lines=window_lines,
                 max_chars=max_chars,
             )
             sources_out = [f"{file}:{s}-{e}" for (_cid, file, s, e, _txt) in contexts]
 
         elif use_deep:
-            # --- SEANCE DEEP: aggregate by file & expand best windows ---
-            top_n = _env_int("SEANCE_DEEP_TOP_FILES", 3)
-
-            # 1) sum candidate scores per file, and remember the best chunk per file
-            file_scores: dict[str, float] = {}
-            best_window: dict[str, tuple[str, int, int, float]] = {}
-
-            for cid, score in matches:
-                meta = man.chunks.get(cid)
-                if not meta:
-                    continue
-                file_scores[meta.file] = file_scores.get(meta.file, 0.0) + float(score)
-                prev = best_window.get(meta.file)
-                if prev is None or score > prev[3]:
-                    best_window[meta.file] = (cid, meta.start_line, meta.end_line, float(score))
-
-            # 2) choose top-N files by total relevance
-            ranked_files = sorted(file_scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
-
-            # 3) prepare windows for expander (use each file's best chunk span)
-            tmp = []
-            for file, _tot in ranked_files:
-                cid, s, e, _best = best_window[file]
-                tmp.append((cid, file, s, e, ""))  # preview filled by expander
-
-            # 4) expand those windows (bounded slices, not whole files)
-            contexts = _expand_to_deep_contexts(tmp, root, top_n)
+            # --- SEANCE DEEP: feed ranked matches to expander for deep windows ---
+            top_n_files = _env_int("SEANCE_DEEP_TOP_FILES", 3)  # Scalable: env override for number of files to expand deeply
+            contexts = _expand_to_deep_contexts(matches, man, root, top_n_files)
             sources_out = [f"{file}:{s}-{e}" for (_cid, file, s, e, _txt) in contexts]
 
         else:
