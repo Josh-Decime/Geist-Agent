@@ -514,6 +514,28 @@ def chat(
             retrieve_k = session.info.k * widen
 
         matches = retrieve(root, name, question, k=retrieve_k)
+                # ─── Symbol-aware re-ranking for --deep / --wide (fixes irrelevant file selection) ───
+        # When symbol-like tokens (e.g. generate_filename) are in the query, boost chunks containing them
+        # so their files rank higher in file_tot → deep/wide expand the right files.
+        if use_deep or use_wide:
+            qtokens = _tokenize(question)
+            symbolish = [qt for qt in qtokens if "_" in qt or len(qt) >= 8 or any(c.isupper() for c in qt if c.isalpha())]
+            if symbolish:
+                try:
+                    ip = index_path(root, name)
+                    if ip.exists():
+                        inverted = json.loads(ip.read_text(encoding="utf-8"))
+                        boost = float(_env_int("SEANCE_SYMBOL_BOOST", 200))  # Huge boost → symbol files jump to top
+                        boosted = []
+                        for cid, score in matches:
+                            hits = sum(1 for qt in symbolish if inverted.get(qt, {}).get(cid, 0) > 0)
+                            boosted.append((cid, score + hits * boost))
+                        boosted.sort(key=lambda x: x[1], reverse=True)
+                        matches = boosted
+                        if _env_bool("SEANCE_RETRIEVAL_LOG", True):
+                            typer.secho(f"• Symbol boost applied ({len(symbolish)} symbols: {', '.join(symbolish[:5])}{'...' if len(symbolish)>5 else ''}), boost={boost}x per hit", fg="blue")
+                except Exception as e:
+                    print(f"• Symbol boost skipped (safe fallback): {e}")
 
         man = load_manifest(root, name)  # refresh
         contexts, sources_out = [], []
