@@ -516,26 +516,30 @@ def chat(
         matches = retrieve(root, name, question, k=retrieve_k)
 
         # ----------------------------------------------------------------------
-        #  HARD FILTER: keep ONLY chunks that contain the symbol(s)
-        #  (only when --deep or --wide is active)
+        #  SYMBOL FILTER – keep ONLY chunks that contain *any* symbol-like token
+        #  (runs **only** for --deep / --wide)
         # ----------------------------------------------------------------------
         if use_deep or use_wide:
-            # 1. Which symbols are we looking for?
-            qtokens   = _tokenize(question)
-            symbols   = [t for t in qtokens if "_" in t or len(t) >= 8]
-            if symbols:                                   # there is at least one symbol
+            # 1. Identify symbols in the question
+            qtokens = _tokenize(question)
+            symbols = [
+                t for t in qtokens
+                if "_" in t or len(t) >= _env_int("SEANCE_SYMBOL_MIN_LEN", 8)
+                or any(c.isupper() for c in t if c.isalpha())
+            ]
+
+            if symbols:
                 try:
                     ip = index_path(root, name)
                     if ip.exists():
                         inverted = json.loads(ip.read_text(encoding="utf-8"))
 
-                        # keep only chunks that contain **every** symbol
-                        filtered = []
-                        for cid, score in matches:
-                            if all(inverted.get(sym, {}).get(cid) for sym in symbols):
-                                filtered.append((cid, score))
+                        # keep chunks that contain **any** of the symbols
+                        filtered = [
+                            (cid, score) for cid, score in matches
+                            if any(inverted.get(sym, {}).get(cid) for sym in symbols)
+                        ]
 
-                        # If the filter removed everything, fall back to the original list
                         if filtered:
                             matches = filtered
                             if _env_bool("SEANCE_RETRIEVAL_LOG", True):
@@ -543,12 +547,18 @@ def chat(
                                 if len(symbols) > 5:
                                     syms += "..."
                                 typer.secho(
-                                    f"• Symbol hard-filter kept {len(matches)}/{len(retrieve(root, name, question, k=retrieve_k))} chunks "
-                                    f"(symbols: {syms})",
+                                    f"• Symbol filter kept {len(matches)} chunks (symbols: {syms})",
                                     fg="blue",
                                 )
-                except Exception as exc:   # never break the whole session
-                    print(f"• Symbol filter skipped (safe fallback): {exc}")
+                        else:
+                            # fallback – keep original list so we never lose all context
+                            if _env_bool("SEANCE_RETRIEVAL_LOG", True):
+                                typer.secho(
+                                    "• Symbol filter removed all chunks – falling back to original list",
+                                    fg="yellow",
+                                )
+                except Exception as exc:
+                    print(f"• Symbol filter skipped (fallback): {exc}")
 
         man = load_manifest(root, name)  # refresh
         contexts, sources_out = [], []
