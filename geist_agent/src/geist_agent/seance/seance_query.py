@@ -93,6 +93,21 @@ def retrieve(root: Path, name: str, query: str, k: int = 6) -> List[Tuple[str, f
             n_t = len(postings)  # docs containing term
             idf[qt] = math.log(1.0 + (N - n_t + 0.5) / (n_t + 0.5))
 
+        # ---------- SYMBOL-AWARE IDF BOOST (makes code symbols dominate) ----------
+        # Apply massive IDF boost to symbol-like tokens (underscores, CamelCase, long tokens)
+        symbolish = [
+            qt for qt in set(qtokens)
+            if "_" in qt or len(qt) >= 12 or any(c.isupper() for c in qt if c.isalpha())
+        ]
+        symbol_boost = float(os.getenv("SEANCE_SYMBOL_IDF_BOOST", "100.0"))  # Configurable!
+
+        for qt in symbolish:
+            if qt in idf:
+                original = idf[qt]
+                idf[qt] = original * symbol_boost
+                if os.getenv("SEANCE_RETRIEVAL_LOG", "").lower() in ("1", "true", "yes", "on"):
+                    print(f"• IDF boost: '{qt}' {original:.3f} → {idf[qt]:.3f} (×{symbol_boost})")
+
         # Base BM25 scores
         scores: Dict[str, float] = {}
         for qt in set(qtokens):
