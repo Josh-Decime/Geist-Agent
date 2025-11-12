@@ -504,7 +504,7 @@ def chat(
         # Candidate widening
         widen     = _env_int("SEANCE_WIDEN", 2)          # default mode multiplier
         deep_mult = _env_int("SEANCE_DEEP_MULT", 4)      # deep mode multiplier
-        wide_mult = _env_int("SEANCE_WIDE_MULT", 6)      # wide mode multiplier
+        wide_mult = _env_int("SEANCE_WIDE_MULT", 3)      # wide mode multiplier
 
         if use_wide:
             retrieve_k = session.info.k * wide_mult
@@ -519,9 +519,9 @@ def chat(
 
         if use_wide:
             # env knobs for wide (scalable: customize snippet size/breadth via .env)
-            top_n_files = _env_int("SEANCE_WIDE_TOP_FILES", max(session.info.k, 10))  # Number of files for breadth
+            top_n_files = _env_int("SEANCE_WIDE_TOP_FILES", max(session.info.k, 5))  # Number of files for breadth
             window_lines = _env_int("SEANCE_WIDE_WINDOW_LINES", 30)                  # +/- lines around best chunk
-            max_chars = _env_int("SEANCE_WIDE_MAX_CHARS", 900)                       # Max chars per snippet
+            max_chars = _env_int("SEANCE_WIDE_MAX_CHARS", 1200)                       # Max chars per snippet
 
             # matches is list[(cid, score)], pass to expander
             contexts = _expand_to_wide_contexts(
