@@ -1,6 +1,6 @@
 # Geist Agent
 
-Geist Agent is a custom AI agent built on the [CrewAI](https://github.com/crewAI/crewAI) framework, leveraging [Typer](https://typer.tiangolo.com/) to deliver a streamlined CLI (`poltergeist`). It offers tools for codebase analysis, self-diagnostics & research.
+Geist Agent is a custom AI agent built on the [CrewAI](https://github.com/crewAI/crewAI) framework, leveraging [Typer](https://typer.tiangolo.com/) to deliver a streamlined CLI (`poltergeist`). It currently has 5 commands. Seance allows you to ask questions about a code base, by indexing the project & uses BM25 or Jaccard to match keyword tokens before presenting that to your chosen LLM for summarization. Unveil provides an in depth summary of a codebase & includes a mermaid graph of the dependencies. Ward utilizes OSV to provide a security report of a codebase. Scry writes a research report on a topic that you provide. Doctor provides diagnostic information for troubleshooting & does initial setup for file placement.
 
 ---
 
@@ -15,7 +15,7 @@ Geist Agent is a custom AI agent built on the [CrewAI](https://github.com/crewAI
 ## Installation
 
 1. **Fork the Repository**:
-   Go to the original repository on GitHub and click the "Fork" button to create your own copy.
+   Click the "Fork" button to create your own copy.
 
 2. **Clone the Repository**:
    ```bash
@@ -45,7 +45,7 @@ Geist Agent is a custom AI agent built on the [CrewAI](https://github.com/crewAI
    ```bash
    poltergeist doctor
    ```
-   *Connecting to your LLM will fail until you complete configuration*
+   *Connecting to your LLM will fail until you complete the configuration steps*
 
 ---
 

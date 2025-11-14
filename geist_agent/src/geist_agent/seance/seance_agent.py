@@ -24,7 +24,6 @@ def _build_prompt(question: str, contexts: List[Tuple[str, str, int, int, str]])
 
     return textwrap.dedent(f"""
     You are an expert software assistant. You must answer ONLY using the provided code excerpts.
-    Read all of the context provided before answering.
     If the excerpts are insufficient or off-topic, say exactly:
     "I don’t have enough on-topic context to answer. I would need: <list missing info>."
     Do NOT invent details. Do NOT change the question.
