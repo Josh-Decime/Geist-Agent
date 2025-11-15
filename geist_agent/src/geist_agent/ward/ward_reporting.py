@@ -1,6 +1,5 @@
 ﻿# src/geist_agent/ward/reporting.py
 from __future__ import annotations
-import os
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict, Counter

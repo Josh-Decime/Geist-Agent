@@ -3,7 +3,6 @@ from __future__ import annotations
 import os, re, json, time, urllib.request, urllib.error
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from collections import Counter
 from geist_agent.ward.ward_common import (
     _log, _which, _run, _best_severity_from_osv_payload, _max_sev_from_list,
     _llm_profile, SCAN_META, Vuln, SecretHit, Issue
