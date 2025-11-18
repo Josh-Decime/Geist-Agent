@@ -7,7 +7,7 @@ from geist_agent.utils import EnvUtils
 loaded_sources = EnvUtils.load_env_for_tool()
 print(f"• Loaded .env sources: {loaded_sources}")
 
-from geist_agent.src.geist_agent.scry.scrying import ScryingAgent
+from geist_agent.scry.scrying import ScryingAgent
 from geist_agent import doctor as doctor_mod
 from geist_agent.unveil.unveil_runner import run_unveil
 from geist_agent.ward.ward_runner import run_ward as ward_run

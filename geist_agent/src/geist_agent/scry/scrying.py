@@ -1,4 +1,4 @@
-﻿# src/geist_agent/scrying.py
+﻿# src/geist_agent/scry/scrying.py
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
@@ -10,6 +10,10 @@ from geist_agent.utils import PathUtils
 @CrewBase
 class ScryingAgent():
     """Scrying crew for divination and research operations"""
+
+    # YAML config files, located in the same folder as this file
+    agents_config = "scry_agents.yaml"
+    tasks_config = "scry_tasks.yaml"
 
     agents: List[BaseAgent]
     tasks: List[Task]
@@ -43,7 +47,7 @@ class ScryingAgent():
     def reporting_task(self) -> Task:
         filename = ReportUtils.generate_filename(self.topic)
         reports_dir = PathUtils.ensure_reports_dir("scrying_reports")
-        full_path = str(reports_dir / filename)   # <-- pathlib join + cast to str
+        full_path = str(reports_dir / filename)
         return Task(
             config=self.tasks_config['reporting_task'],  # type: ignore[index]
             output_file=full_path
