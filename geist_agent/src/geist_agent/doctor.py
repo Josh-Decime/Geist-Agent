@@ -1,6 +1,5 @@
 ﻿# src/geist_agent/doctor.py
 from __future__ import annotations
-import os, json, sys, urllib.request
 from dataclasses import dataclass
 from importlib.metadata import version, PackageNotFoundError
 from typing import Any, Callable, Dict, List
@@ -10,8 +9,8 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.markdown import Markdown
 from pathlib import Path
-
 from geist_agent.utils import EnvUtils, PathUtils
+import os, json, sys, urllib.request
 
 console = Console()
 

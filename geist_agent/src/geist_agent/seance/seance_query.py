@@ -6,7 +6,6 @@ import os
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
-
 from .seance_index import load_manifest, index_path
 from .seance_common import tokenize
 from .seance_agent import SeanceAgent

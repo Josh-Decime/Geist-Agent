@@ -2,11 +2,10 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import List
-import yaml
-
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
+import yaml
 
 @CrewBase
 class UnveilCrew:

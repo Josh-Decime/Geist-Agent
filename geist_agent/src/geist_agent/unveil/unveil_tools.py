@@ -2,9 +2,9 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Any, List, Dict, Tuple, Optional
-import re
 from collections import Counter, defaultdict
 from geist_agent.utils import ReportUtils, PathUtils
+import re
 
 # ---------- formatting helpers (API, summaries) ----------
 def _format_api_list(api_val: Any, max_items: int = 12) -> list[str]:

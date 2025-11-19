@@ -1,12 +1,12 @@
 ﻿# src/geist_agent/utils.py
-import re
-import os
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Iterable
 from dotenv import load_dotenv
 from fnmatch import fnmatch
 from itertools import islice
+import re
+import os
 
 
 class ReportUtils:

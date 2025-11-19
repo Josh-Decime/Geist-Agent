@@ -1,10 +1,9 @@
 ﻿# src/geist_agent/ward/common.py
 from __future__ import annotations
-import os, sys, json, shutil, subprocess
 from dataclasses import dataclass
-
 from typing import Dict, List, Optional, Tuple, Any
 from contextlib import contextmanager
+import os, sys, json, shutil, subprocess
 
 # ---------- tiny logger ----------
 def _log(enabled: bool, msg: str):

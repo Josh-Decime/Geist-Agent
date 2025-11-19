@@ -1,10 +1,8 @@
 ﻿# src/geist_agent/ward/runner.py
 from __future__ import annotations
-import argparse
 from pathlib import Path
 from typing import List, Optional
 from geist_agent.utils import walk_files_compat as walk_files, PathUtils, ReportUtils
-
 # Core pieces from the split modules
 from geist_agent.ward.ward_common import _log, _reset_scan_meta, _llm_profile, SCAN_META
 from geist_agent.ward.ward_scanning import (
@@ -15,6 +13,7 @@ from geist_agent.ward.ward_reporting import (
     _vuln_details_url, _build_vulnerability_summary_md, _extract_theme_counts,
     _get_ward_advisor, llm_recommendations_with,
 )
+import argparse
 
 # ---------- command entry ----------
 def run_ward(

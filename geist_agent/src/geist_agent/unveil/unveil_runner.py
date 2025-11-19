@@ -2,11 +2,11 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Dict
+from contextlib import contextmanager
+from geist_agent.utils import SCAN_EXTS_FAST, SCAN_EXTS_FULL, walk_files_compat as _walk
 import json
 import sys
 import time
-from contextlib import contextmanager
-from geist_agent.utils import SCAN_EXTS_FAST, SCAN_EXTS_FULL, walk_files_compat as _walk
 
 from crewai import Task
 # NOTE: we intentionally do NOT import UnveilCrew here to avoid any accidental CrewBase bootstrapping.
