@@ -17,7 +17,7 @@ class UnveilCrew:
     # Only load unveil_* configs; avoid pulling in scry tasks/agents.
     def load_configurations(self):
         here = Path(__file__).resolve().parent
-        cfg = here / "config"
+        config_dir = here / "config"  # optional legacy fallback
 
         def _load(p: Path):
             if p.exists():
@@ -25,12 +25,28 @@ class UnveilCrew:
                     return yaml.safe_load(f) or {}
             return {}
 
-        agents_raw = _load(cfg / "unveil_agents.yaml") or _load(cfg / "agents.yaml")
+        def _first_existing(*paths: Path):
+            for p in paths:
+                data = _load(p)
+                if data:
+                    return data
+            return {}
+
+        # Prefer YAMLs that live directly in the unveil/ package;
+        # fall back to config/ for backwards compatibility.
+        agents_raw = _first_existing(
+            here / "unveil_agents.yaml",
+            config_dir / "unveil_agents.yaml",
+            config_dir / "agents.yaml",
+        )
         agents_raw = {k: v for k, v in (agents_raw or {}).items() if k.startswith("unveil_")}
         self.agents_config = agents_raw
 
         # The runner creates Task() objects manually, so tasks are optional.
-        tasks_raw = _load(cfg / "unveil_tasks.yaml") or {}
+        tasks_raw = _first_existing(
+            here / "unveil_tasks.yaml",
+            config_dir / "unveil_tasks.yaml",
+        )
         tasks_raw = {k: v for k, v in (tasks_raw or {}).items() if k.startswith("unveil_")}
         self.tasks_config = tasks_raw
 

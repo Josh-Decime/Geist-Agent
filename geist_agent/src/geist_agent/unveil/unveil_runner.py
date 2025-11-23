@@ -54,11 +54,18 @@ def _get_unveil_agents():
     import yaml
     from crewai import Agent
 
-    cfg = Path(__file__).resolve().parent / "config" / "unveil_agents.yaml"
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here / "unveil_agents.yaml",          # new location
+        here / "config" / "unveil_agents.yaml",  # legacy fallback
+    ]
+
     data = {}
-    if cfg.is_file():
-        with cfg.open("r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
+    for cfg in candidates:
+        if cfg.is_file():
+            with cfg.open("r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            break
 
     def _mk(name, fallback):
         if name in data:
